@@ -75,8 +75,8 @@ function setupEnvironment() {
     { n: CONFIG.SHEETS.PRODUCTION, h: ['date', 'menuCode', 'qtyProduced'] },
     { n: CONFIG.SHEETS.SALES, h: ['date', 'itemCode', 'qty'] },
     { n: CONFIG.SHEETS.WASTE, h: ['date', 'itemCode', 'qty', 'unit'] },
-    { n: CONFIG.SHEETS.STOCK, h: ['date', 'itemCode', 'qty', 'unit'] },
-    
+    { n: CONFIG.SHEETS.STOCK, h: ['date', 'itemCode', 'countedQty', 'unit'] },
+
     // System Sheets
     { n: CONFIG.SHEETS.OPENING, h: ['itemCode', 'qty', 'wac', 'val'] },
     { n: CONFIG.SHEETS.BOM_CACHE, h: ['menuCode', 'ingCode', 'qtyNeeded'] },
@@ -209,7 +209,7 @@ function loadAllData(ss, errorLog) {
     PRODUCTION: getSheetSafe(ss, CONFIG.SHEETS.PRODUCTION, ['date', 'menuCode', 'qtyProduced'], 'menuCode'),
     SALES: getSheetSafe(ss, CONFIG.SHEETS.SALES, ['date', 'itemCode', 'qty'], 'itemCode'),
     WASTE: getSheetSafe(ss, CONFIG.SHEETS.WASTE, ['date', 'itemCode', 'qty', 'unit'], 'itemCode'),
-    STOCK: getSheetSafe(ss, CONFIG.SHEETS.STOCK, ['date', 'itemCode', 'qty', 'unit'], 'itemCode')
+    STOCK: getSheetSafe(ss, CONFIG.SHEETS.STOCK, ['date', 'itemCode', 'countedQty', 'unit'], 'itemCode')
   };
 }
 
@@ -400,9 +400,12 @@ function buildUnifiedLedger(data, cachedBOM, errorLog) {
   });
 
   data.STOCK.forEach(s => {
-    const b = validate(s, 'STOCK_ADJUST'); 
-    if(b) ledger.push(b);
-  });
+  const b = validate(s, 'STOCK_ADJUST'); 
+  if(b) {
+      b.countedQty = parseNumber(s.countedQty);
+      ledger.push(b);
+  }
+});
 
   return ledger.sort((a, b) => 
       (a.date - b.date) || 
@@ -475,18 +478,22 @@ function processLedgerAndAudit(ledger, itemsMap, suspenseLog, errorLog) {
       }
     }
     else if (txn.type === 'STOCK_ADJUST') {
-        if (txn.qty > 0) {
-            e.qty += txn.qty;
-            e.val += txn.qty * e.wac;
-            if (e.qty > CONFIG.TOLERANCE) e.wac = e.val / e.qty;
-        } else {
-            const absQty = Math.abs(txn.qty);
-            checkSuspense(e, { ...txn, qty: absQty }, suspenseLog);
-            const cost = absQty * e.wac;
-            e.qty += txn.qty; 
-            e.val -= cost;
-        }
+    const currentQty = e.qty;
+    const countedQty = txn.countedQty;
+    const variance = countedQty - currentQty;
+    
+    if (variance > CONFIG.TOLERANCE) {
+        e.qty += variance;
+        e.val += variance * e.wac;
+        if (e.qty > CONFIG.TOLERANCE) e.wac = e.val / e.qty;
+    } else if (variance < -CONFIG.TOLERANCE) {
+        const absVariance = Math.abs(variance);
+        checkSuspense(e, { ...txn, qty: absVariance, type: 'STOCK_SHORTAGE' }, suspenseLog);
+        const cost = absVariance * e.wac;
+        e.qty -= absVariance; 
+        e.val -= cost;
     }
+}
     
     if (Math.abs(e.qty) < CONFIG.TOLERANCE) { 
         e.qty = 0; 
@@ -676,11 +683,11 @@ function getUiConfig() {
     },
     'STOCK': {
       sheetName: CONFIG.SHEETS.STOCK,
-      label: '📊 تعدیل انبار',
+      label: '📊 انبارگردانی (ثبت شمارش)',
       fields: [
-        { name: 'date', label: 'تاریخ', type: 'date', required: true },
+        { name: 'date', label: 'تاریخ شمارش', type: 'date', required: true },
         { name: 'itemCode', label: 'کد کالا', type: 'datalist', required: true },
-        { name: 'qty', label: 'مقدار تعدیل (+ اضافی، - کسری)', type: 'number', required: true },
+        { name: 'countedQty', label: 'موجودی شمارش شده (واقعی)', type: 'number', required: true },
         { name: 'unit', label: 'واحد', type: 'text', required: true }
       ]
     },
