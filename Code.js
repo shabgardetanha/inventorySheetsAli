@@ -72,7 +72,9 @@ function runFinancialEngine() {
     const itemsMap = buildItemsMap(rawData.ITEMS, errorLog);
 
     // 3. Process BOM
-    const flatBOM = buildFlatBOM(rawData.RECIPES, itemsMap, convGraph, errorLog);
+    const stockedItems = new Set(rawData.PURCHASES.map(p => String(p.itemCode)));
+    rawData.STOCK.forEach(st => stockedItems.add(String(st.itemCode)));
+    const flatBOM = buildFlatBOM(rawData.RECIPES, itemsMap, convGraph, stockedItems, errorLog);
     
     // 4. Build Unified Ledger
     const ledger = buildUnifiedLedger(rawData, itemsMap, flatBOM, convGraph, errorLog);
@@ -266,7 +268,7 @@ function parseDateStrict(v) {
    5. GRAPHS & BOM ENGINE
    ========================================== */
 
-function buildItemsMap(rows, errorLog) {
+function buildItemsMap(rows) {
   const map = {};
   rows.forEach(r => map[String(r.itemCode)] = { itemName: r.itemName||'بدون نام', baseUnit: r.baseUnit||'' });
   return map;
@@ -297,13 +299,14 @@ function getConversion(g, from, to) {
   return null;
 }
 
-function buildFlatBOM(recipes, itemsMap, convGraph, errorLog) {
+function buildFlatBOM(recipes, itemsMap, convGraph, stockedItems, errorLog) {
   const map = {}, inv = new Set(), menus = [...new Set(recipes.map(r => String(r.menuCode)))];
   
   const resolve = (code, mult, res, path, depth) => {
     if (depth > CONFIG.MAX_BOM_DEPTH || path.includes(code)) return false;
     const ings = recipes.filter(r => String(r.menuCode) === String(code));
-    if (!ings.length) { res[code] = (res[code] || 0) + mult; return true; }
+    // If item has no recipe OR is directly stocked (purchased/stock-adjusted), treat as leaf
+    if (!ings.length || stockedItems.has(code)) { res[code] = (res[code] || 0) + mult; return true; }
     
     for (let ing of ings) {
       const iCode = String(ing.ingCode);
@@ -311,7 +314,7 @@ function buildFlatBOM(recipes, itemsMap, convGraph, errorLog) {
       const conv = getConversion(convGraph, String(ing.unit), tUnit || String(ing.unit));
       if (!conv) { errorLog.push(`[خطای BOM] ابطال فرمول ${path[0]||code}: تبدیل واحد جزء ${iCode} یافت نشد.`); return false; }
       const yF = (parseNumber(ing.yield) > 0) ? (parseNumber(ing.yield)/100) : 1;
-      const eQty = (parseNumber(ing.qty) * conv.factor * mult) / yF;
+      const eQty = parseFloat((parseNumber(ing.qty) * conv.factor * mult / yF).toFixed(CONFIG.ROUND_QTY));
       if (!resolve(iCode, eQty, res, [...path, code], depth + 1)) return false;
     }
     return true;
@@ -341,9 +344,16 @@ function buildUnifiedLedger(data, itemsMap, flatBOM, convGraph, errorLog) {
 
   data.SALES.forEach(s => {
     const b = validate(s, 'SALE'); if(!b) return;
-    if (flatBOM.invalidMenus.has(b.itemCode)) return;
+    if (flatBOM.invalidMenus.has(b.itemCode)) {
+      errorLog.push(`[Skip] فروش کالای ترکیبی ${b.itemCode} به دلیل خطا در فرمول BOM نادیده گرفته شد.`);
+      return;
+    }
+    // If sold item is directly stocked, treat as direct material sale (no BOM expansion)
+    const stockedItems = new Set(data.PURCHASES.map(p => String(p.itemCode)));
+    data.STOCK.forEach(st => stockedItems.add(String(st.itemCode)));
+    if (stockedItems.has(b.itemCode)) { ledger.push(b); return; }
     const comps = flatBOM.map[b.itemCode];
-    if (comps) for (let i in comps) ledger.push({ ...b, itemCode: i, qty: comps[i] * b.qty });
+    if (comps) for (let i in comps) ledger.push({ ...b, itemCode: i, qty: parseFloat((comps[i] * b.qty).toFixed(CONFIG.ROUND_QTY)) });
     else ledger.push(b);
   });
 
@@ -385,11 +395,13 @@ function processLedgerAndAudit(ss, ledger, itemsMap, errorLog) {
     } 
     else if (txn.type === 'SALE' || txn.type === 'WASTE') {
       if (e.qty - txn.qty < -CONFIG.TOLERANCE) {
-        errorLog.push(`[توقف سخت] کالا ${txn.itemCode} ردیف ${txn._row}: موجودی منفی. تراکنش باطل شد.`);
+        errorLog.push(`[توقف سخت] کالا ${txn.itemCode} ردیف ${txn._row}: موجودی منفی (موجود=${e.qty.toFixed(CONFIG.ROUND_QTY)}, کسر=${txn.qty.toFixed(CONFIG.ROUND_QTY)}). تراکنش باطل شد.`);
         return;
       }
-      const cost = txn.qty * e.wac;
-      e.qty -= txn.qty; e.val -= cost;
+      // Tolerance-safe arithmetic: round to avoid floating-point drift
+      const cost = parseFloat((txn.qty * e.wac).toFixed(CONFIG.ROUND_MONEY));
+      e.qty = parseFloat((e.qty - txn.qty).toFixed(CONFIG.ROUND_QTY));
+      e.val = parseFloat(Math.max(0, e.val - cost).toFixed(CONFIG.ROUND_MONEY));
       if (isTargetDate) {
         if (txn.type === 'SALE') daily_cogs += cost;
         else daily_wasteVal += cost;
@@ -455,7 +467,7 @@ function processLedgerAndAudit(ss, ledger, itemsMap, errorLog) {
   const daily_actualCost = daily_cogs + daily_wasteVal - daily_invVarianceVal;
   const daily_costVariance = daily_actualCost - daily_cogs;
 
-const metrics = {
+  const metrics = {
     targetDate: maxTime ? new Date(maxTime).toLocaleDateString('fa-IR') : 'نامشخص',
     netSales: daily_netSales,
     invoiceCount: daily_invoices.size,
@@ -465,120 +477,10 @@ const metrics = {
     actualCost: daily_actualCost,
     estCogs: daily_cogs,
     costVariance: daily_costVariance,
-    purchases: daily_purchases,
-    wasteCost: daily_wasteVal
+    purchases: daily_purchases
   };
 
   return { inventory: inv, dailyMetrics: metrics };
-}
-
-/* ==========================================
-   7.5. DASHBOARD API (for `index.html` frontend)
-   ========================================== */
-
-function getDashboardData(startDate, endDate) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const errorLog = [];
-
-  try {
-    // 1. Ingest & Load
-    ingestImportSheets(ss, errorLog);
-    const rawData = loadAllData(ss, errorLog);
-    const itemsMap = buildItemsMap(rawData.ITEMS, errorLog);
-    const convGraph = buildConversionGraph(rawData.CONVERSIONS, errorLog);
-    const flatBOM = buildFlatBOM(rawData.RECIPES, itemsMap, convGraph, errorLog);
-    const ledger = buildUnifiedLedger(rawData, itemsMap, flatBOM, convGraph, errorLog);
-    const { inventory, dailyMetrics } = processLedgerAndAudit(ss, ledger, itemsMap, errorLog);
-
-    // 2. Build KPIs
-    const totalCost = dailyMetrics.actualCost || 0;
-    const netSales = dailyMetrics.netSales || 1;
-    const kpis = {
-      primeCostPct: netSales > 0 ? (totalCost / netSales) * 100 : 0,
-      theoFoodCostPct: netSales > 0 ? ((dailyMetrics.estCogs || 0) / netSales) * 100 : 0,
-      wasteCost: dailyMetrics.wasteCost || 0,
-      purchases: dailyMetrics.purchases || 0
-    };
-    
-    // 2a. Additional reference KPIs from daily metrics
-    kpis.primeCost = totalCost;
-    kpis.theoFoodCost = dailyMetrics.estCogs || 0;
-
-    // 3. Build BCG Matrix (Menu Engineering)
-    const matrix = [];
-    const menuSales = {};
-    rawData.SALES.forEach(s => {
-      const code = String(s.itemCode);
-      if (!menuSales[code]) menuSales[code] = 0;
-      menuSales[code] += parseNumber(s.qty);
-    });
-
-    // Calculate menu item unit contribution margin & popularity
-    Object.keys(menuSales).forEach(code => {
-      const item = itemsMap[code];
-      // Find in ledger for cost
-      const comps = flatBOM.map[code];
-      let totalCostMenu = 0;
-      if (comps) {
-        Object.keys(comps).forEach(iCode => {
-          if (inventory[iCode]) totalCostMenu += comps[iCode] * inventory[iCode].wac;
-        });
-      }
-      const unitCost = totalCostMenu || (inventory[code] ? inventory[code].wac : 0);
-      // Assume a unit price per sale (average from data - default to 1 for safety)
-      const avgPrice = netSales / (Object.keys(menuSales).length || 1);
-      const unitCM = avgPrice - unitCost;
-      const pop = menuSales[code];
-      // Compute label
-      let label = 'DOG';
-      if (pop > 10 && unitCM > 0) label = 'STAR';
-      else if (pop > 10 && unitCM <= 0) label = 'PLOWHORSE';
-      else if (pop <= 10 && unitCM > 0) label = 'PUZZLE';
-      matrix.push({
-        name: item ? item.itemName : code,
-        pop: Math.min((pop / Math.max(...Object.values(menuSales), 1)) * 100, 100),
-        unitCM: Math.max(unitCM, 0),
-        label: label
-      });
-    });
-
-    // 4. Build Inventory with Safety Stock / Smart Order
-    const invList = [];
-    Object.keys(inventory).forEach(code => {
-      const item = inventory[code];
-      // Calculate average daily consumption from sales ledger in last 30 days
-      const ledgerFiltered = ledger.filter(t => t.itemCode === code && (t.type === 'SALE' || t.type === 'WASTE'));
-      let totalConsumed = 0;
-      ledgerFiltered.forEach(t => totalConsumed += t.qty);
-      const daySpan = 30;
-      const avgDaily = totalConsumed / daySpan;
-      const safetyStock = avgDaily * 3; // 3 days safety
-      const needed = Math.max(0, safetyStock - item.qty);
-
-      invList.push({
-        name: item.name || code,
-        current: Number(item.qty.toFixed(2)),
-        avgDaily: avgDaily,
-        unit: item.unit || '',
-        needed: needed
-      });
-    });
-    invList.sort((a, b) => b.needed - a.needed);
-
-    return {
-      status: 'ok',
-      kpis: kpis,
-      matrix: matrix,
-      inventory: invList,
-      errors: errorLog
-    };
-
-  } catch (e) {
-    return {
-      status: 'error',
-      message: e && e.message ? e.message : String(e)
-    };
-  }
 }
 
 /* ==========================================
