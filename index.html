@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>Cafe ERP v9.0 Enterprise</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet" />
+  <style>
+    body { font-family: Vazirmatn, sans-serif; background-color: #f1f5f9; }
+    [x-cloak] { display: none !important; }
+    .kpi-card { @apply bg-white p-5 rounded-2xl shadow-sm border border-slate-200; }
+  </style>
+</head>
+
+<body x-data="erp()" class="pb-20" x-cloak>
+
+  <nav class="bg-slate-900 text-white p-4 sticky top-0 z-50 shadow-lg">
+    <div class="container mx-auto flex justify-between items-center">
+      <div class="flex items-center gap-3">
+        <div class="bg-indigo-500 p-2 rounded-lg font-bold">ERP v9</div>
+        <div class="text-xs text-slate-400">Enterprise Edition</div>
+      </div>
+      <div class="flex gap-2">
+        <input type="date" x-model="dates.start" class="text-slate-900 rounded p-1 text-xs">
+        <input type="date" x-model="dates.end" class="text-slate-900 rounded p-1 text-xs">
+        <button @click="fetchData()" class="bg-indigo-600 px-3 rounded text-xs hover:bg-indigo-500">بروزرسانی</button>
+      </div>
+    </div>
+  </nav>
+
+  <div x-show="error" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+    <div class="bg-white p-6 rounded-lg shadow-xl max-w-sm">
+      <h3 class="text-red-600 font-bold mb-2">خطای سیستمی</h3>
+      <p x-text="error" class="text-sm text-slate-600 mb-4"></p>
+      <button @click="error = null" class="bg-slate-200 px-4 py-2 rounded text-sm w-full">بستن</button>
+    </div>
+  </div>
+
+  <main class="container mx-auto p-6 space-y-6">
+    
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div class="kpi-card border-l-4 border-indigo-500">
+        <div class="text-slate-500 text-xs font-bold uppercase">Prime Cost</div>
+        <div class="text-2xl font-black text-slate-800" x-text="data.kpis.primeCostPct.toFixed(1) + '%'"></div>
+        <div class="text-[10px] text-slate-400 mt-1">
+          Theoretical COGS + Labor
+        </div>
+      </div>
+      
+      <div class="kpi-card border-l-4 border-emerald-500">
+        <div class="text-slate-500 text-xs font-bold uppercase">Food Cost (Theo)</div>
+        <div class="text-2xl font-black text-emerald-700" x-text="data.kpis.theoFoodCostPct.toFixed(1) + '%'"></div>
+        <div class="text-[10px] text-slate-400 mt-1">Based on Recipes</div>
+      </div>
+
+      <div class="kpi-card border-l-4 border-red-500">
+        <div class="text-slate-500 text-xs font-bold uppercase">Waste Cost</div>
+        <div class="text-2xl font-black text-red-600" x-text="format(data.kpis.wasteCost)"></div>
+        <div class="text-[10px] text-slate-400 mt-1">Direct Loss</div>
+      </div>
+
+      <div class="kpi-card border-l-4 border-orange-500">
+        <div class="text-slate-500 text-xs font-bold uppercase">Purchases (Cash Flow)</div>
+        <div class="text-2xl font-black text-orange-600" x-text="format(data.kpis.purchases)"></div>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div class="lg:col-span-2 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+        <h3 class="font-bold text-slate-700 mb-4 text-sm">Menu Engineering (BCG Matrix)</h3>
+        <div class="relative h-80 bg-slate-50 rounded-xl border border-dashed border-slate-300 p-4">
+          <div class="absolute top-1/2 left-0 w-full h-px bg-slate-300"></div>
+          <div class="absolute left-1/2 top-0 h-full w-px bg-slate-300"></div>
+          
+          <template x-for="item in data.matrix" :key="item.name">
+            <div class="absolute w-3 h-3 rounded-full border border-white shadow hover:scale-150 transition-transform cursor-pointer"
+                 :class="getColor(item.label)"
+                 :style="`left: ${item.pop}%; bottom: ${Math.min(item.unitCM / 1000, 95)}%;`"
+                 :title="item.name + ' (' + item.label + ')'">
+            </div>
+          </template>
+          
+          <div class="absolute top-2 right-2 text-[10px] space-y-1">
+            <div class="flex items-center gap-1"><div class="w-2 h-2 bg-emerald-500 rounded-full"></div> Star</div>
+            <div class="flex items-center gap-1"><div class="w-2 h-2 bg-orange-500 rounded-full"></div> Plowhorse</div>
+            <div class="flex items-center gap-1"><div class="w-2 h-2 bg-blue-500 rounded-full"></div> Puzzle</div>
+            <div class="flex items-center gap-1"><div class="w-2 h-2 bg-red-500 rounded-full"></div> Dog</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+        <h3 class="font-bold text-slate-700 mb-4 text-sm">🛒 سفارش هوشمند (Safety Stock)</h3>
+        <div class="overflow-y-auto h-80 pr-2">
+          <template x-for="item in data.inventory" :key="item.name">
+            <div class="flex justify-between items-center p-3 mb-2 bg-slate-50 rounded border border-slate-100">
+              <div>
+                <div class="font-bold text-xs" x-text="item.name"></div>
+                <div class="text-[10px] text-slate-500">
+                  موجودی: <span x-text="item.current"></span> | مصرف روزانه: <span x-text="item.avgDaily.toFixed(1)"></span>
+                </div>
+              </div>
+              <div class="text-right">
+                <div class="text-indigo-600 font-bold text-sm" x-text="item.needed.toFixed(1)"></div>
+                <div class="text-[8px] text-slate-400" x-text="item.unit"></div>
+              </div>
+            </div>
+          </template>
+          <div x-show="data.inventory.length === 0" class="text-center text-xs text-slate-400 mt-10">همه چیز موجود است ✅</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    function erp() {
+      return {
+        error: null,
+        dates: { 
+          start: new Date(new Date().setDate(new Date().getDate()-30)).toISOString().slice(0,10), 
+          end: new Date().toISOString().slice(0,10) 
+        },
+        data: { kpis: {}, matrix: [], inventory: [] },
+        
+        init() { this.fetchData(); },
+        
+        fetchData() {
+          google.script.run
+            .withSuccessHandler(res => {
+              if(res.status === 'error') this.error = res.message;
+              else this.data = res;
+            })
+            .withFailureHandler(e => this.error = e.message)
+            .getDashboardData(this.dates.start, this.dates.end);
+        },
+        
+        format(n) { return new Intl.NumberFormat('fa-IR').format(Math.round(n||0)); },
+        getColor(l) {
+          return {
+            'STAR': 'bg-emerald-500', 'PLOWHORSE': 'bg-orange-500',
+            'PUZZLE': 'bg-blue-500', 'DOG': 'bg-red-500'
+          }[l] || 'bg-slate-300';
+        }
+      }
+    }
+  </script>
+</body>
+</html>
