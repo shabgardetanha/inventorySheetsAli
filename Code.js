@@ -85,7 +85,7 @@ function onOpen() {
     .addItem('🚀 اجرای کامل محاسبات روزانه (FEFO & Multi-WH)', 'runFinancialEngine')
     .addItem('⚙️ به‌روزرسانی کش فرمول ساخت (BOM)', 'updateBOMCache')
     .addItem('📦 تولید خودکار فرمول بسته‌بندی', 'generatePackagingBOM')
-    .addItem('🔄 اعمال لیست کشویی برای کدهای کالا', 'setupDataValidation')
+    .addItem('🔄 اعمال لیست‌های کشویی هوشمند (Data Validation)', 'setupDataValidation')
     .addSeparator()
     .addItem('🛠 ایجاد/بازسازی تمام شیت‌های سیستم (نسخه ۸)', 'setupEnvironment')
     .addToUi();
@@ -739,49 +739,144 @@ function logCriticalError(ss, e) {
 }
 
 /* ==========================================
-   8. WEB APP & DATA VALIDATION
+   8. WEB APP & DATA VALIDATION (لیست‌های کشویی هوشمند)
    ========================================== */
 function setupDataValidation() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const itemsSh = ss.getSheetByName(CONFIG.SHEETS.ITEMS);
-  if (!itemsSh || itemsSh.getLastRow() < 2) {
-    SpreadsheetApp.getUi().alert('⚠️ شیت ITEMS خالی است یا وجود ندارد.');
-    return;
-  }
-  const lastRow = itemsSh.getLastRow();
-  const headers = itemsSh.getRange(1, 1, 1, itemsSh.getLastColumn()).getValues()[0];
-  let displayNameCol = headers.indexOf('displayName');
-  if (displayNameCol === -1) {
-    displayNameCol = itemsSh.getLastColumn();
-    itemsSh.getRange(1, displayNameCol + 1).setValue('displayName').setFontWeight('bold');
-  }
-  for (let i = 2; i <= lastRow; i++) {
-    const code = itemsSh.getRange(i, 1).getValue();
-    const name = itemsSh.getRange(i, 2).getValue();
-    if (code && name) itemsSh.getRange(i, displayNameCol + 1).setValue(`${name} | ${code}`);
-  }
-  const displayRange = itemsSh.getRange(2, displayNameCol + 1, lastRow - 1, 1);
-  const rule = SpreadsheetApp.newDataValidation().requireValueInRange(displayRange, true).setAllowInvalid(false).build();
-  
-  const targets = [
-    { sheet: CONFIG.SHEETS.PURCHASES, col: 'itemCode' }, { sheet: CONFIG.SHEETS.SALES, col: 'itemCode' },
-    { sheet: CONFIG.SHEETS.WASTE, col: 'itemCode' }, { sheet: CONFIG.SHEETS.STOCK, col: 'itemCode' },
-    { sheet: CONFIG.SHEETS.OPENING, col: 'itemCode' }, { sheet: CONFIG.SHEETS.PRODUCTION, col: 'menuCode' },
-    { sheet: CONFIG.SHEETS.RECIPES, col: 'menuCode' }, { sheet: CONFIG.SHEETS.RECIPES, col: 'ingCode' }
-  ];
+  const ui = SpreadsheetApp.getUi();
   let appliedCount = 0;
-  targets.forEach(t => {
-    const sh = ss.getSheetByName(t.sheet);
-    if (sh) {
-      const h = sh.getRange(1, 1, 1, sh.getLastColumn() || 1).getValues()[0];
-      const colIdx = h.indexOf(t.col);
-      if (colIdx !== -1) {
-        sh.getRange(2, colIdx + 1, Math.max(sh.getMaxRows(), 1000) - 1, 1).setDataValidation(rule);
-        appliedCount++;
-      }
+
+  // Helper to apply validation to a specific column
+  function applyValidation(sheet, colName, rule) {
+    if (!sheet) return false;
+    const lastCol = sheet.getLastColumn() || 1;
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    const colIdx = headers.indexOf(colName);
+    if (colIdx !== -1) {
+      sheet.getRange(2, colIdx + 1, Math.max(sheet.getMaxRows(), 1000) - 1, 1).setDataValidation(rule);
+      return true;
     }
+    return false;
+  }
+
+  // Helper to get unique values from a column across multiple sheets
+  function getUniqueValues(sheetNames, colName) {
+    let values = new Set();
+    sheetNames.forEach(name => {
+      const sh = ss.getSheetByName(name);
+      if (sh && sh.getLastRow() > 1) {
+        const lastCol = sh.getLastColumn() || 1;
+        const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+        const colIdx = headers.indexOf(colName);
+        if (colIdx !== -1) {
+          const vals = sh.getRange(2, colIdx + 1, sh.getLastRow() - 1, 1).getValues();
+          vals.forEach(v => {
+            if (v[0] !== '' && v[0] !== null && v[0] !== undefined) {
+              values.add(String(v[0]).trim());
+            }
+          });
+        }
+      }
+    });
+    return Array.from(values);
+  }
+
+  // 1. Item Codes (displayName: Name | Code)
+  const itemsSh = ss.getSheetByName(CONFIG.SHEETS.ITEMS);
+  if (itemsSh && itemsSh.getLastRow() >= 2) {
+    const lastRow = itemsSh.getLastRow();
+    const lastCol = itemsSh.getLastColumn() || 1;
+    const headers = itemsSh.getRange(1, 1, 1, lastCol).getValues()[0];
+    let displayNameCol = headers.indexOf('displayName');
+    if (displayNameCol === -1) {
+      displayNameCol = lastCol;
+      itemsSh.getRange(1, displayNameCol + 1).setValue('displayName').setFontWeight('bold');
+    }
+    for (let i = 2; i <= lastRow; i++) {
+      const code = itemsSh.getRange(i, 1).getValue();
+      const name = itemsSh.getRange(i, 2).getValue();
+      if (code && name) itemsSh.getRange(i, displayNameCol + 1).setValue(`${name} | ${code}`);
+    }
+    const displayRange = itemsSh.getRange(2, displayNameCol + 1, lastRow - 1, 1);
+    const itemRule = SpreadsheetApp.newDataValidation().requireValueInRange(displayRange, true).setAllowInvalid(false).build();
+    
+    const itemTargets = [
+      { sheet: CONFIG.SHEETS.PURCHASES, col: 'itemCode' }, { sheet: CONFIG.SHEETS.SALES, col: 'itemCode' },
+      { sheet: CONFIG.SHEETS.WASTE, col: 'itemCode' }, { sheet: CONFIG.SHEETS.STOCK, col: 'itemCode' },
+      { sheet: CONFIG.SHEETS.OPENING, col: 'itemCode' }, { sheet: CONFIG.SHEETS.PRODUCTION, col: 'menuCode' },
+      { sheet: CONFIG.SHEETS.RECIPES, col: 'menuCode' }, { sheet: CONFIG.SHEETS.RECIPES, col: 'ingCode' }
+    ];
+    
+    itemTargets.forEach(t => {
+      if (applyValidation(ss.getSheetByName(t.sheet), t.col, itemRule)) appliedCount++;
+    });
+  }
+
+  // 2. Item Type in ITEMS
+  if (itemsSh) {
+    const typeRule = SpreadsheetApp.newDataValidation().requireValueInList(Object.values(CONFIG.ITEM_TYPES), true).build();
+    if (applyValidation(itemsSh, 'itemType', typeRule)) appliedCount++;
+  }
+
+  // 3. Is Catch Weight in ITEMS
+  if (itemsSh) {
+    const boolRule = SpreadsheetApp.newDataValidation().requireValueInList(['TRUE', 'FALSE'], true).build();
+    if (applyValidation(itemsSh, 'isCatchWeight', boolRule)) appliedCount++;
+  }
+
+  // 4. Parent Item in ITEMS (List of itemCodes)
+  if (itemsSh && itemsSh.getLastRow() >= 2) {
+    const codeRange = itemsSh.getRange(2, 1, itemsSh.getLastRow() - 1, 1);
+    const parentRule = SpreadsheetApp.newDataValidation().requireValueInRange(codeRange, true).setAllowInvalid(false).build();
+    if (applyValidation(itemsSh, 'parentItem', parentRule)) appliedCount++;
+  }
+
+  // 5. Units (baseUnit, secondaryUnit, fromUnit, toUnit, unit)
+  let units = getUniqueValues([CONFIG.SHEETS.CONVERSIONS], 'fromUnit');
+  let unitsTo = getUniqueValues([CONFIG.SHEETS.CONVERSIONS], 'toUnit');
+  units = [...new Set([...units, ...unitsTo])];
+  if (units.length === 0) {
+    units = ['kg', 'g', 'pcs', 'box', 'ltr', 'ml']; // Default units if CONVERSIONS is empty
+  }
+  const unitRule = SpreadsheetApp.newDataValidation().requireValueInList(units, true).setAllowInvalid(false).build();
+  
+  const unitTargets = [
+    { sheet: CONFIG.SHEETS.ITEMS, col: 'baseUnit' },
+    { sheet: CONFIG.SHEETS.ITEMS, col: 'secondaryUnit' },
+    { sheet: CONFIG.SHEETS.CONVERSIONS, col: 'fromUnit' },
+    { sheet: CONFIG.SHEETS.CONVERSIONS, col: 'toUnit' },
+    { sheet: CONFIG.SHEETS.PURCHASES, col: 'unit' },
+    { sheet: CONFIG.SHEETS.WASTE, col: 'unit' },
+    { sheet: CONFIG.SHEETS.STOCK, col: 'unit' }
+  ];
+  unitTargets.forEach(t => {
+    if (applyValidation(ss.getSheetByName(t.sheet), t.col, unitRule)) appliedCount++;
   });
-  SpreadsheetApp.getUi().alert(`✅ لیست کشویی روی ${appliedCount} ستون اعمال شد.`);
+
+  // 6. Warehouse Codes
+  let warehouses = getUniqueValues([
+    CONFIG.SHEETS.PURCHASES, CONFIG.SHEETS.PRODUCTION, CONFIG.SHEETS.SALES, 
+    CONFIG.SHEETS.WASTE, CONFIG.SHEETS.STOCK, CONFIG.SHEETS.OPENING
+  ], 'warehouseCode');
+  
+  if (warehouses.length === 0) {
+    warehouses = ['DEFAULT_WH', 'MAIN_WH', 'COLD_STORAGE']; // Default warehouses
+  }
+  const whRule = SpreadsheetApp.newDataValidation().requireValueInList(warehouses, true).setAllowInvalid(false).build();
+  
+  const whTargets = [
+    { sheet: CONFIG.SHEETS.PURCHASES, col: 'warehouseCode' },
+    { sheet: CONFIG.SHEETS.PRODUCTION, col: 'warehouseCode' },
+    { sheet: CONFIG.SHEETS.SALES, col: 'warehouseCode' },
+    { sheet: CONFIG.SHEETS.WASTE, col: 'warehouseCode' },
+    { sheet: CONFIG.SHEETS.STOCK, col: 'warehouseCode' },
+    { sheet: CONFIG.SHEETS.OPENING, col: 'warehouseCode' }
+  ];
+  whTargets.forEach(t => {
+    if (applyValidation(ss.getSheetByName(t.sheet), t.col, whRule)) appliedCount++;
+  });
+
+  ui.alert(`✅ لیست‌های کشویی روی ${appliedCount} ستون اعمال شد.\nموارد شامل: کد کالا، نوع کالا، واحد اندازه‌گیری، انبار و...`);
 }
 
 function onEdit(e) {
