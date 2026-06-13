@@ -955,6 +955,12 @@ function onEdit(e) {
 /* ==========================================
    9. CODING GUIDE GENERATOR (راهنمای کدگذاری)
    ========================================== */
+/* ==========================================
+   9. CODING GUIDE GENERATOR (راهنمای کدگذاری - نسخه نهایی و هوشمند)
+   ========================================== */
+/* ==========================================
+   9. CODING GUIDE GENERATOR (راهنمای کدگذاری - نسخه نهایی و هوشمند)
+   ========================================== */
 function createCodingGuideSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ui = SpreadsheetApp.getUi();
@@ -965,7 +971,7 @@ function createCodingGuideSheet() {
   
   const sheet = ss.insertSheet('CODING_GUIDE');
   
-  // داده‌های راهنما
+  // داده‌های راهنما (به‌روزرسانی شده با دسته‌های جدید FP, PR, TR, BK)
   const data = [
     ["دیکشنری جامع کدگذاری اقلام (ERP Coding Dictionary)", "", ""],
     ["ساختار کلی کد:   T - CC - SS - NNN   (نوع - دسته اصلی - زیردسته - شماره ترتیبی)", "", ""],
@@ -976,7 +982,7 @@ function createCodingGuideSheet() {
     ["P", "Packaging (ملزومات بسته‌بندی و یکبار مصرف)", "P-PK-BX-001 (جعبه ساندویچ)"],
     ["C", "Cleaning & Hygiene (شوینده، بهداشتی و نظافت)", "C-CL-DC-004 (مایع ظرفشویی)"],
     ["H", "Hookah & Lounge (ملزومات قلیان و لانژ)", "H-HK-TB-001 (تنباکو لاو)"],
-    ["F", "Finished Product (محصول نهایی / غذای آماده سرو)", "F-ME-PR-001 (خوراک شنسل)"],
+    ["F", "Finished Product (محصول نهایی / غذای آماده سرو)", "F-DR-BK-001 (کیک روز)"],
     ["", "", ""],
     ["2️⃣ بخش دوم و سوم: دسته اصلی (CC) و زیردسته (SS)", "", ""],
     ["🥩 گروه ME: گوشت و پروتئین", "", ""],
@@ -984,7 +990,7 @@ function createCodingGuideSheet() {
     ["LM", "گوسفندی (Lamb/Mutton)", "R-ME-LM-003 (شیشلیک گوسفندی)"],
     ["PO", "طیور / مرغ (Poultry)", "R-ME-PO-001 (سینه مرغ)"],
     ["SF", "دریایی / ماهی و میگو (Seafood)", "R-ME-SF-001 (میگو منجمد)"],
-    ["PR", "فرآوری‌شده (Processed)", "R-ME-PR-005 (سوسیس المانی)"],
+    ["PR", "فرآوری‌شده گوشتی (Processed)", "R-ME-PR-005 (سوسیس المانی)"],
     ["🧀 گروه DA: لبنیات و تخم‌مرغ", "", ""],
     ["CH", "پنیر (Cheese)", "R-DA-CH-001 (پنیر پارمسان)"],
     ["MK", "شیر و خامه (Milk/Cream)", "R-DA-MK-001 (خامه پرچرب)"],
@@ -994,8 +1000,10 @@ function createCodingGuideSheet() {
     ["VG", "سبزیجات تازه (Vegetables)", "R-PR-VG-001 (پیاز زرد)"],
     ["FR", "میوه تازه (Fruits)", "R-PR-FR-002 (موز)"],
     ["HB", "سبزیجات معطر و خوردنی (Herbs)", "R-PR-HB-001 (سبزی پیازچه)"],
-    ["FZ", "منجمد (Frozen)", "R-PR-FZ-001 (توت فرنگی منجمد)"],
+    ["FZ", "میوه/سبزی منجمد خام (Frozen Raw)", "R-PR-FZ-001 (توت فرنگی منجمد)"],
     ["🏺 گروه DR: خشکبار، غلات و اقلام انبار", "", ""],
+    ["FP", "اقلام نیمه‌آماده منجمد (Frozen Prepared)", "R-DR-FP-001 (سیب‌زمینی خلالی شرکتی)"],
+    ["PR", "مواد آماده‌سازی شده (Prepared)", "R-DR-PR-001 (پیاز داغ)"],
     ["SP", "ادویه‌جات (Spices)", "R-DR-SP-001 (ادویه کاری)"],
     ["SY", "سس‌ها و چاشنی‌ها (Sauces/Syrups)", "R-DR-SY-011 (رب گوجه فرنگی)"],
     ["CN", "کنسرو و شیشه‌ای (Canned/Jarred)", "R-DR-CN-003 (کنسرو تن ماهی)"],
@@ -1008,13 +1016,14 @@ function createCodingGuideSheet() {
     ["SD", "نوشابه و دلستر (Soft Drinks)", "R-BV-SD-001 (نوشابه قوطی فانتا)"],
     ["JC", "آبمیوه و دوغ (Juices)", "R-BV-JC-001 (آب انار)"],
     ["WT", "آب و یخ (Water)", "R-BV-WT-001 (آب معدنی بزرگ)"],
-    ["CF", "قهوه و چای (Coffee/Tea)", "R-BV-CF-009 (دان قهوه 80/20)"],
+    ["CF", "قهوه، چای و ملزومات دم‌آوری (Coffee/Tea)", "R-BV-CF-009 (دان قهوه)"],
     ["EN", "نوشیدنی انرژی‌زا (Energy)", "R-BV-EN-001 (انرژی زا نایت کینگ)"],
     ["SY", "سیروپ‌ها و عرقیات (Syrups/Extracts)", "R-BV-SY-001 (سیروپ پشن فروت)"],
     ["📦 گروه PK: بسته‌بندی (پیشوند P)", "", ""],
     ["BX", "جعبه و کارتن (Boxes)", "P-PK-BX-001 (جعبه ساندویچ)"],
     ["BG", "کیسه و پاکت (Bags)", "P-PK-BG-001 (کیسه دسته دار)"],
     ["CT", "ظروف یکبار مصرف (Containers)", "P-PK-CT-001 (ظرف آلومینیوم)"],
+    ["TR", "سینی و زیردستی (Trays)", "P-PK-TR-001 (سینی شیرینگ بیرون بر)"],
     ["UT", "ملزومات سرو و خوردن (Utensils)", "P-PK-UT-002 (قاشق یکبار مصرف)"],
     ["LB", "لیبل، سلفون و فویل (Labels/Films)", "P-PK-LB-003 (سلفون)"],
     ["🧼 گروه CL: شوینده و بهداشتی (پیشوند C)", "", ""],
@@ -1026,6 +1035,13 @@ function createCodingGuideSheet() {
     ["TB", "تنباکو (Tobacco)", "H-HK-TB-001 (تنباکو لاو)"],
     ["AC", "لوازم جانبی قلیان (Accessories)", "H-HK-AC-001 (شلنگ قلیان)"],
     ["CH", "زغال و مشتقات (Charcoal)", "H-HK-CH-001 (زغال)"],
+    ["🥐 گروه BK: محصولات پخت روز (پیشوند F)", "", ""],
+    ["BK", "شیرینی و کیک آماده سرو (Baked)", "F-DR-BK-001 (کیک روز)"],
+    ["", "", ""],
+    ["3️⃣ بخش چهارم: شماره ترتیبی (Sequence) - NNN", "", ""],
+    ["قانون", "توضیح", "مثال"],
+    ["1", "همیشه ۳ رقمی است (از 001 تا 999).", "001, 042, 105"],
+    ["2", "استفاده از صفرهای پیشرو (Leading Zeros) الزامی است.", "✅ 001 | ❌ 1"],
     ["", "", ""],
     ["⚠️ ۴ قانون طلایی نگهداری دیتابیس کالا", "", ""],
     ["1", "کد هرگز تغییر نمی‌کند: حتی اگر نام کالا عوض شد، کد ثابت می‌ماند.", ""],
@@ -1038,81 +1054,77 @@ function createCodingGuideSheet() {
   const lastRow = data.length;
   sheet.getRange(1, 1, lastRow, 3).setValues(data);
 
-  // --- قالب‌بندی حرفه‌ای (Professional Formatting) ---
+  // --- قالب‌بندی هوشمند و حرفه‌ای (Smart Professional Formatting) ---
   
-  // 1. تنظیم عرض ستون‌ها و جهت متن
-  sheet.setColumnWidth(1, 100); // ستون کد
-  sheet.setColumnWidth(2, 400); // ستون توضیح
-  sheet.setColumnWidth(3, 250); // ستون مثال
-  sheet.setRightToLeft(true); // راست‌چین کردن کل شیت برای فارسی
+  // 1. تنظیمات پایه
+  sheet.setColumnWidth(1, 110); // ستون کد
+  sheet.setColumnWidth(2, 420); // ستون توضیح
+  sheet.setColumnWidth(3, 280); // ستون مثال
+  sheet.setRightToLeft(true); // راست‌چین کردن کل شیت
+  sheet.setFrozenRows(2); // فریز کردن دو ردیف اول
 
-  // 2. عنوان اصلی (ردیف 1)
-  const titleRange = sheet.getRange(1, 1, 1, 3);
-  titleRange.merge();
-  titleRange.setFontWeight('bold').setFontSize(16).setFontColor('#ffffff')
-            .setHorizontalAlignment('center').setVerticalAlignment('middle')
-            .setBackground('#1a73e8'); // آبی گوگل
-
-  // 3. زیرعنوان ساختار (ردیف 2)
-  const subRange = sheet.getRange(2, 1, 1, 3);
-  subRange.merge();
-  subRange.setFontWeight('bold').setFontSize(12).setFontColor('#1a73e8')
-            .setHorizontalAlignment('center').setBackground('#e8f0fe');
-
-  // 4. هدرهای بخش‌ها (ردیف‌های خاص)
-  const sectionHeaders = [4, 12, 19, 24, 29, 38, 45, 51, 56, 60];
-  sectionHeaders.forEach(row => {
-    const range = sheet.getRange(row, 1, 1, 3);
-    range.merge();
-    range.setFontWeight('bold').setFontSize(12).setFontColor('#0d652d')
-         .setHorizontalAlignment('right').setBackground('#d9ead3'); // سبز روشن
-  });
-
-  // 5. هدرهای جداول داخلی (ردیف‌های خاص)
-  const tableHeaders = [5, 13, 20, 25, 30, 39, 46, 52, 57, 61];
-  tableHeaders.forEach(row => {
-    const range = sheet.getRange(row, 1, 1, 3);
-    range.setFontWeight('bold').setFontSize(11).setFontColor('#202124')
-         .setHorizontalAlignment('center').setBackground('#f3f3f3')
-         .setBorder(true, true, true, true, true, true, '#b7b7b7', SpreadsheetApp.BorderStyle.SOLID);
-  });
-
-  // 6. هدر قوانین طلایی (ردیف 60)
-  const rulesHeader = sheet.getRange(60, 1, 1, 3);
-  rulesHeader.merge();
-  rulesHeader.setFontWeight('bold').setFontSize(12).setFontColor('#b0080d')
-             .setHorizontalAlignment('right').setBackground('#fce8e6'); // قرمز روشن
-
-  // 7. قالب‌بندی ردیف‌های داده (شماره‌گذاری و مثال‌ها)
-  // راست‌چین کردن توضیحات، وسط‌چین کردن کدها
+  // 2. حلقه هوشمند فرمت‌بندی بر اساس محتوا
   for (let i = 1; i <= lastRow; i++) {
-    // اگر ردیف جزو هدرها یا عنوان‌ها نیست
-    if (![1, 2, 4, 12, 19, 24, 29, 38, 45, 51, 56, 60].includes(i) && 
-        ![5, 13, 20, 25, 30, 39, 46, 52, 57, 61].includes(i)) {
-      
-      // ستون 1 (کد): وسط‌چین، فونت مونواسپیس (شبیه کد)
-      sheet.getRange(i, 1).setHorizontalAlignment('center').setFontFamily('Courier New, monospace').setFontWeight('bold').setFontColor('#d93025');
+    let col1 = sheet.getRange(i, 1).getValue().toString().trim();
+    let rowRange = sheet.getRange(i, 1, 1, 3);
+
+    // عنوان اصلی (ردیف 1)
+    if (i === 1) {
+      rowRange.merge();
+      rowRange.setFontWeight('bold').setFontSize(16).setFontColor('#ffffff')
+                .setHorizontalAlignment('center').setVerticalAlignment('middle')
+                .setBackground('#1a73e8'); // آبی گوگل
+    }
+    // زیرعنوان ساختار (ردیف 2)
+    else if (i === 2) {
+      rowRange.merge();
+      rowRange.setFontWeight('bold').setFontSize(12).setFontColor('#1a73e8')
+                .setHorizontalAlignment('center').setBackground('#e8f0fe');
+    }
+    // هدرهای بخش‌های اصلی (شماره‌دار با ایموجی)
+    else if (col1.match(/^[1-4]️⃣/) || col1.includes("⚠️")) {
+      rowRange.merge();
+      let bgColor = col1.includes("⚠️") ? '#fce8e6' : '#d9ead3'; // قرمز روشن برای هشدار، سبز برای بخش‌ها
+      let fontColor = col1.includes("⚠️") ? '#b0080d' : '#0d652d';
+      rowRange.setFontWeight('bold').setFontSize(12).setFontColor(fontColor)
+                .setHorizontalAlignment('right').setBackground(bgColor);
+    }
+    // هدرهای دسته‌بندی (شروع با ایموجی)
+    else if (col1.match(/^[🥩🧀🥬🏺🥤📦🧼🪩🥐]/)) {
+      rowRange.merge();
+      rowRange.setFontWeight('bold').setFontSize(11).setFontColor('#0d652d')
+                .setHorizontalAlignment('right').setBackground('#e6f4ea');
+    }
+    // هدرهای جداول داخلی (شامل کلمه "کد" یا "قانون")
+    else if (col1.includes("کد (") || col1 === "قانون") {
+      rowRange.setFontWeight('bold').setFontSize(10).setFontColor('#202124')
+                .setHorizontalAlignment('center').setBackground('#f3f3f3')
+                .setBorder(true, true, true, true, true, true, '#b7b7b7', SpreadsheetApp.BorderStyle.SOLID);
+    }
+    // ردیف‌های داده (کدهای 1 یا 2 حرفی، یا اعداد قوانین)
+    else if (col1.match(/^[A-Z]{1,2}$/) || col1.match(/^\d+$/)) {
+      // ستون 1 (کد/شماره): وسط‌چین، فونت کد
+      sheet.getRange(i, 1).setHorizontalAlignment('center').setFontFamily('Courier New, monospace')
+           .setFontWeight('bold').setFontColor(col1.match(/^\d+$/) ? '#202124' : '#d93025');
       
       // ستون 2 (توضیح): راست‌چین
       sheet.getRange(i, 2).setHorizontalAlignment('right');
       
       // ستون 3 (مثال): راست‌چین، فونت کد
-      sheet.getRange(i, 3).setHorizontalAlignment('right').setFontFamily('Courier New, monospace').setFontColor('#188038');
+      sheet.getRange(i, 3).setHorizontalAlignment('right').setFontFamily('Courier New, monospace')
+           .setFontColor('#188038');
       
-      // خطوط جداکننده ملایم برای خوانایی
-      sheet.getRange(i, 1, 1, 3).setBorder(false, false, true, false, false, false, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
+      // خط جداکننده ملایم پایین ردیف
+      rowRange.setBorder(false, false, true, false, false, false, '#e0e0e0', SpreadsheetApp.BorderStyle.SOLID);
     }
   }
 
-  // 8. قفل کردن شیت برای جلوگیری از تغییر تصادفی ساختار (اختیاری اما توصیه شده)
+  // 3. محافظت از شیت (فقط مالک می‌تواند ویرایش کند)
   const protection = sheet.protect().setDescription('Coding Guide Protection');
   protection.removeEditors(protection.getEditors());
   if (protection.canDomainEdit()) {
     protection.setDomainEdit(false);
   }
-  // اجازه ویرایش فقط به صاحب فایل (به صورت پیش‌فرض با removeEditors بالا اعمال می‌شود)
 
-  // بازگشت به شیت اصلی یا نمایش پیام
-  sheet.setFrozenRows(2); // فریز کردن دو ردیف اول برای اسکرول راحت
-  SpreadsheetApp.getUi().alert('✅ شیت راهنمای کدگذاری (CODING_GUIDE) با موفقیت و با فرمت حرفه‌ای ایجاد شد.');
+  SpreadsheetApp.getUi().alert('✅ شیت راهنمای کدگذاری (CODING_GUIDE) با موفقیت، با فرمت هوشمند و دسته‌بندی‌های جدید ایجاد شد.');
 }
