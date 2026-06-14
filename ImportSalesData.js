@@ -1,6 +1,7 @@
 /**
- * 📄 فایل: ImportSalesData.gs (نسخه نهایی با پاک‌سازی هسته‌ای)
- * 📝 توضیحات: پاک‌سازی تهاجمی تمام Data Validationهای شیت مقصد قبل از نوشتن داده.
+ * 📄 فایل: ImportSalesData.gs
+ * 📝 توضیحات: اسکریپت خالص ETL برای استخراج، تبدیل و بارگذاری داده‌ها.
+ * ⚠️ توجه: مدیریت اعتبارسنجی (Data Validation) به اسکریپت اصلی واگذار شده است.
  */
 
 const IMPORT_SALES_CONFIG = {
@@ -55,7 +56,7 @@ function importSalesDataToTargetSheet() {
     return;
   }
   
-  // 1. ثبت خودکار واحدهای جدید
+  // 1. شناسایی و ثبت خودکار واحدهای جدید در سیستم (بدون دستکاری اعتبارسنجی)
   const sourceUnits = new Set();
   rows.forEach(row => {
     if (idxUnit !== -1 && row[idxUnit]) {
@@ -64,10 +65,10 @@ function importSalesDataToTargetSheet() {
   });
   syncUnitsToSystem(ss, Array.from(sourceUnits));
   
-  // 2. افزودن خودکار کالاهای جدید به ITEMS
+  // 2. افزودن خودکار کالاهای جدید به شیت ITEMS
   addNewItemsToItemsSheet(ss, rows, idxCode, idxName, idxUnit);
   
-  // 3. پردازش داده‌ها
+  // 3. پردازش و تبدیل داده‌ها
   const outputRows = [];
   let skippedCount = 0;
   
@@ -103,7 +104,7 @@ function importSalesDataToTargetSheet() {
     return;
   }
   
-  // 4. آماده‌سازی شیت مقصد
+  // 4. آماده‌سازی و نوشتن داده‌ها در شیت مقصد
   const targetLastRow = targetSheet.getLastRow();
   let startRow = 2;
   
@@ -117,25 +118,11 @@ function importSalesDataToTargetSheet() {
     startRow = targetLastRow + 1;
   }
   
-  // 🛡️ 5. پاک‌سازی هسته‌ای (Nuclear Clear) تمام اعتبارسنجی‌ها
-  try {
-    // الف) پاک کردن از تمام محدوده استفاده شده در شیت
-    if (targetSheet.getLastRow() > 0) {
-      targetSheet.getDataRange().clearDataValidations();
-    }
-    // ب) پاک کردن تضمینی از کل ستون A (برای جلوگیری از خطای A3)
-    targetSheet.getRange("A:A").clearDataValidations();
-    // ج) اجبار به اعمال فوری پاک‌سازی قبل از نوشتن
-    SpreadsheetApp.flush(); 
-  } catch (e) {
-    console.error("هشدار در پاک‌سازی اعتبارسنجی: " + e.message);
-  }
-  
-  // 6. نوشتن داده‌ها (اکنون بدون هیچ مانعی انجام می‌شود)
+  // نوشتن خالص داده‌ها (بدون هیچگونه دستکاری Data Validation)
   targetSheet.getRange(startRow, 1, outputRows.length, outputRows[0].length).setValues(outputRows);
   targetSheet.getRange(startRow, 1, outputRows.length, 1).setNumberFormat('yyyy/mm/dd');
   
-  // 7. بازسازی قوانین صحیح توسط فایل اصلی
+  // 5. فراخوانی تابع اعتبارسنجی از فایل اصلی برای به‌روزرسانی قوانین
   try {
     setupDataValidation(); 
   } catch (e) {
@@ -145,11 +132,11 @@ function importSalesDataToTargetSheet() {
   ui.alert(`✅ عملیات با موفقیت انجام شد!\n\n` +
            `📊 تعداد ${outputRows.length} ردیف منتقل شد.\n` +
            `⚠️ ${skippedCount} ردیف نادیده گرفته شد.\n\n` +
-           `💡 تنظیمات اشتباه شیت به طور خودکار اصلاح و قوانین صحیح جایگزین شدند.`);
+           `💡 کالاهای جدید و واحدهای جدید به سیستم اضافه و قوانین اعتبارسنجی به‌روز شدند.`);
 }
 
 // =================================================================
-// توابع کمکی (بدون تغییر)
+// توابع کمکی (فقط مربوط به داده، بدون اعتبارسنجی)
 // =================================================================
 function syncUnitsToSystem(ss, newUnits) {
   const convSheet = ss.getSheetByName('CONVERSIONS');
@@ -253,3 +240,158 @@ function updateDisplayNameColumn(itemsSheet, startRow, count) {
     if (code && name) itemsSheet.getRange(rowIdx, displayNameColIdx + 1).setValue(`${name} | ${code}`);
   }
 }
+
+
+/**
+ * 🆕 فقط افزودن کالاهای جدید به ITEMS (بدون انتقال فروش)
+ * این تابع ابتدا واحدهای جدید را استانداردسازی و به سیستم اضافه می‌کند،
+ * سپس کالاهای جدید را با واحدهای استاندارد شده به شیت ITEMS می‌افزاید.
+ */
+function syncNewItemsOnly() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  
+  const sourceSheet = ss.getSheetByName(IMPORT_SALES_CONFIG.SOURCE_SHEET);
+  if (!sourceSheet) {
+    ui.alert(`❌ خطا: شیت منبع '${IMPORT_SALES_CONFIG.SOURCE_SHEET}' یافت نشد.`);
+    return;
+  }
+  
+  const itemsSheet = ss.getSheetByName('ITEMS');
+  if (!itemsSheet) {
+    ui.alert(`❌ خطا: شیت مقصد 'ITEMS' یافت نشد.`);
+    return;
+  }
+  
+  const rawData = sourceSheet.getDataRange().getValues();
+  if (rawData.length < 2) {
+    ui.alert('⚠️ شیت منبع خالی است یا فقط شامل هدر می‌باشد.');
+    return;
+  }
+  
+  const headers = rawData[0];
+  const rows = rawData.slice(1);
+  
+  const getColIdx = (name) => headers.indexOf(name);
+  const idxCode = getColIdx(IMPORT_SALES_CONFIG.COL_ITEM_CODE);
+  const idxName = getColIdx(IMPORT_SALES_CONFIG.COL_ITEM_NAME);
+  const idxUnit = getColIdx(IMPORT_SALES_CONFIG.COL_UNIT);
+  
+  if (idxCode === -1) {
+    ui.alert('❌ خطا: ستون "کد کالا" در شیت منبع یافت نشد.');
+    return;
+  }
+
+  // 1. استخراج و استانداردسازی واحدها
+  const sourceUnits = new Set();
+  rows.forEach(row => {
+    if (idxUnit !== -1 && row[idxUnit]) {
+      sourceUnits.add(normalizeText(row[idxUnit])); // 🛡️ استانداردسازی واحد
+    }
+  });
+  
+  // افزودن واحدهای استاندارد شده به سیستم
+  syncUnitsToSystem(ss, Array.from(sourceUnits));
+  
+  // 2. استخراج کالاهای جدید
+  const existingItems = getExistingItemCodes(itemsSheet);
+  const newItemsMap = new Map();
+  
+  rows.forEach(row => {
+    const code = row[idxCode];
+    if (!code) return;
+    const codeStr = String(code).trim();
+    if (existingItems.has(codeStr) || newItemsMap.has(codeStr)) return;
+    
+    const name = idxName !== -1 ? String(row[idxName] || '').trim() : '';
+    // 🛡️ استفاده از واحد استاندارد شده برای کالا
+    const unit = idxUnit !== -1 ? normalizeText(row[idxUnit]) : 'عدد'; 
+    
+    newItemsMap.set(codeStr, { name: name || `کالای ${codeStr}`, unit: unit || 'عدد' });
+  });
+  
+  if (newItemsMap.size === 0) {
+    ui.alert('✅ هیچ کالای جدیدی برای افزودن به ITEMS یافت نشد.');
+    return;
+  }
+  
+  // 3. آماده‌سازی ردیف‌های جدید
+  const newRows = [];
+  newItemsMap.forEach((data, code) => {
+    newRows.push([code, data.name, data.unit, 'PRODUCT', 0, '', 'FALSE', '']);
+  });
+  
+  const lastRow = itemsSheet.getLastRow();
+  const startRow = lastRow === 0 ? 2 : lastRow + 1;
+  
+  if (lastRow === 0) {
+    itemsSheet.getRange(1, 1, 1, 8).setValues([['itemCode', 'itemName', 'baseUnit', 'itemType', 'packageSize', 'parentItem', 'isCatchWeight', 'secondaryUnit']]).setFontWeight('bold').setBackground('#efefef');
+    itemsSheet.setFrozenRows(1);
+  }
+  
+  // 🛡️ 4. پاک‌سازی هسته‌ای (Nuclear Clear) اعتبارسنجی‌های شیت ITEMS قبل از نوشتن
+  try {
+    itemsSheet.getDataRange().clearDataValidations();
+    SpreadsheetApp.flush(); 
+  } catch (e) {
+    console.error("هشدار در پاک‌سازی اعتبارسنجی ITEMS: " + e.message);
+  }
+  
+  // 5. نوشتن داده‌ها
+  itemsSheet.getRange(startRow, 1, newRows.length, 8).setValues(newRows).setBackground('#fff2cc');
+  updateDisplayNameColumn(itemsSheet, startRow, newRows.length);
+  
+  // 6. بازسازی قوانین صحیح (اکنون با واحدهای استاندارد شده)
+  try {
+    setupDataValidation(); 
+  } catch (e) {
+    console.warn("خطا در به‌روزرسانی اعتبارسنجی: " + e.message);
+  }
+  
+  ui.alert(`✅ عملیات با موفقیت انجام شد!\n\n` +
+           `🆕 تعداد ${newRows.length} کالای جدید به ITEMS اضافه شد.\n` +
+           `📏 واحدهای جدید به سیستم و لیست‌های کشویی اضافه شدند.\n\n` +
+           `💡 تمام حروف عربی/فارسی و فاصله‌ها به صورت خودکار استاندارد شدند.`);
+}
+
+// =================================================================
+// توابع کمکی به‌روزرسانی شده
+// =================================================================
+
+/**
+ * 📏 افزودن واحدهای جدید به شیت CONVERSIONS (با پشتیبانی از استانداردسازی)
+ */
+function syncUnitsToSystem(ss, newUnits) {
+  const convSheet = ss.getSheetByName('CONVERSIONS');
+  if (!convSheet) {
+    const sh = ss.insertSheet('CONVERSIONS');
+    sh.getRange(1, 1, 1, 3).setValues([['fromUnit', 'toUnit', 'factor']]).setFontWeight('bold').setBackground('#efefef');
+  }
+  
+  const data = convSheet.getDataRange().getValues();
+  const existingUnits = new Set();
+  
+  // خواندن واحدهای موجود و استانداردسازی آن‌ها برای مقایسه
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0]) existingUnits.add(normalizeText(data[i][0]));
+    if (data[i][1]) existingUnits.add(normalizeText(data[i][1]));
+  }
+  
+  const toAdd = [];
+  newUnits.forEach(u => {
+    // 🛡️ واحد ورودی را استانداردسازی می‌کنیم
+    const normalizedUnit = normalizeText(u); 
+    if (normalizedUnit && !existingUnits.has(normalizedUnit)) {
+      toAdd.push([normalizedUnit, normalizedUnit, 1]); // افزودن واحد استاندارد شده
+      existingUnits.add(normalizedUnit);
+    }
+  });
+  
+  if (toAdd.length > 0) {
+    const lastRow = convSheet.getLastRow();
+    const startRow = lastRow === 0 ? 2 : lastRow + 1;
+    convSheet.getRange(startRow, 1, toAdd.length, 3).setValues(toAdd);
+  }
+}
+
+

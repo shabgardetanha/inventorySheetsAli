@@ -77,6 +77,26 @@ function convertJalaliToGregorian(jalaliStr) {
   try { return jalaliToGregorian(jy, jm, jd); } catch (e) { return null; }
 }
 
+/**
+ * 🛡️ تابع استانداردسازی متن (تبدیل حروف عربی به فارسی و حذف کاراکترهای مخفی)
+ */
+function normalizeText(text) {
+  if (!text) return '';
+  let str = String(text).trim();
+  
+  // 1. تبدیل حروف عربی به معادل فارسی
+  str = str.replace(/[\u064A\u0649]/g, 'ی'); // ي و ى عربی -> ی فارسی
+  str = str.replace(/[\u0643]/g, 'ک');       // ك عربی -> ک فارسی
+  str = str.replace(/[\u0629]/g, 'ه');       // ة عربی -> ه فارسی
+  
+  // 2. حذف نیم‌فاصله (ZWNJ) و یکپارچه‌سازی فاصله‌ها
+  str = str.replace(/\u200C/g, ' '); // تبدیل نیم‌فاصله به فاصله معمولی
+  str = str.replace(/\s+/g, ' ').trim(); // تبدیل چند فاصله متوالی به یک فاصله
+  
+  // 3. تبدیل حروف بزرگ انگلیسی به کوچک (برای یکپارچگی)
+  return str.toLowerCase();
+}
+
 /* ==========================================
    1. UI & INITIALIZATION
    ========================================== */
@@ -835,7 +855,7 @@ function setupDataValidation() {
   // 2. واحدهای اندازه‌گیری (Units)
   let units = getUniqueValues(['CONVERSIONS'], 'fromUnit');
   let unitsTo = getUniqueValues(['CONVERSIONS'], 'toUnit');
-  units = [...new Set([...units, ...unitsTo, 'kg', 'g', 'ltr', 'ml', 'pcs', 'box', 'عدد', 'بسته', 'کیلوگرم', 'گرم'])];
+  units = [...new Set([...units, ...unitsTo, 'kg', 'g', 'ltr', 'ml', 'pcs', 'box', 'عدد', 'بسته', 'كيلو', 'گرم'])];
   
   const unitRule = SpreadsheetApp.newDataValidation().requireValueInList(units, true).setAllowInvalid(false).build();
   
