@@ -1,7 +1,6 @@
 /**
- * 📄 فایل: ImportSalesData.gs
- * 📝 توضیحات: اسکریپت خالص ETL برای استخراج، تبدیل و بارگذاری داده‌ها.
- * ⚠️ توجه: مدیریت اعتبارسنجی (Data Validation) به اسکریپت اصلی واگذار شده است.
+ * 📄 فایل: ImportSalesData.gs (نسخه نهایی با پاک‌سازی هسته‌ای)
+ * 📝 توضیحات: پاک‌سازی تهاجمی تمام Data Validationهای شیت مقصد قبل از نوشتن داده.
  */
 
 const IMPORT_SALES_CONFIG = {
@@ -56,7 +55,7 @@ function importSalesDataToTargetSheet() {
     return;
   }
   
-  // 1. شناسایی و ثبت خودکار واحدهای جدید در سیستم (بدون دستکاری اعتبارسنجی)
+  // 1. ثبت خودکار واحدهای جدید
   const sourceUnits = new Set();
   rows.forEach(row => {
     if (idxUnit !== -1 && row[idxUnit]) {
@@ -65,10 +64,10 @@ function importSalesDataToTargetSheet() {
   });
   syncUnitsToSystem(ss, Array.from(sourceUnits));
   
-  // 2. افزودن خودکار کالاهای جدید به شیت ITEMS
+  // 2. افزودن خودکار کالاهای جدید به ITEMS
   addNewItemsToItemsSheet(ss, rows, idxCode, idxName, idxUnit);
   
-  // 3. پردازش و تبدیل داده‌ها
+  // 3. پردازش داده‌ها
   const outputRows = [];
   let skippedCount = 0;
   
@@ -104,7 +103,7 @@ function importSalesDataToTargetSheet() {
     return;
   }
   
-  // 4. آماده‌سازی و نوشتن داده‌ها در شیت مقصد
+  // 4. آماده‌سازی شیت مقصد
   const targetLastRow = targetSheet.getLastRow();
   let startRow = 2;
   
@@ -118,11 +117,25 @@ function importSalesDataToTargetSheet() {
     startRow = targetLastRow + 1;
   }
   
-  // نوشتن خالص داده‌ها (بدون هیچگونه دستکاری Data Validation)
+  // 🛡️ 5. پاک‌سازی هسته‌ای (Nuclear Clear) تمام اعتبارسنجی‌ها
+  try {
+    // الف) پاک کردن از تمام محدوده استفاده شده در شیت
+    if (targetSheet.getLastRow() > 0) {
+      targetSheet.getDataRange().clearDataValidations();
+    }
+    // ب) پاک کردن تضمینی از کل ستون A (برای جلوگیری از خطای A3)
+    targetSheet.getRange("A:A").clearDataValidations();
+    // ج) اجبار به اعمال فوری پاک‌سازی قبل از نوشتن
+    SpreadsheetApp.flush(); 
+  } catch (e) {
+    console.error("هشدار در پاک‌سازی اعتبارسنجی: " + e.message);
+  }
+  
+  // 6. نوشتن داده‌ها (اکنون بدون هیچ مانعی انجام می‌شود)
   targetSheet.getRange(startRow, 1, outputRows.length, outputRows[0].length).setValues(outputRows);
   targetSheet.getRange(startRow, 1, outputRows.length, 1).setNumberFormat('yyyy/mm/dd');
   
-  // 5. فراخوانی تابع اعتبارسنجی از فایل اصلی برای به‌روزرسانی قوانین
+  // 7. بازسازی قوانین صحیح توسط فایل اصلی
   try {
     setupDataValidation(); 
   } catch (e) {
@@ -132,11 +145,11 @@ function importSalesDataToTargetSheet() {
   ui.alert(`✅ عملیات با موفقیت انجام شد!\n\n` +
            `📊 تعداد ${outputRows.length} ردیف منتقل شد.\n` +
            `⚠️ ${skippedCount} ردیف نادیده گرفته شد.\n\n` +
-           `💡 کالاهای جدید و واحدهای جدید به سیستم اضافه و قوانین اعتبارسنجی به‌روز شدند.`);
+           `💡 تنظیمات اشتباه شیت به طور خودکار اصلاح و قوانین صحیح جایگزین شدند.`);
 }
 
 // =================================================================
-// توابع کمکی (فقط مربوط به داده، بدون اعتبارسنجی)
+// توابع کمکی (بدون تغییر)
 // =================================================================
 function syncUnitsToSystem(ss, newUnits) {
   const convSheet = ss.getSheetByName('CONVERSIONS');
