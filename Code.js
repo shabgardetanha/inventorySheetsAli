@@ -853,9 +853,16 @@ function setupDataValidation() {
   }
 
   // 2. واحدهای اندازه‌گیری (Units)
+  // 2. واحدهای اندازه‌گیری (Units) - 🛡️ نسخه استانداردسازی شده
   let units = getUniqueValues(['CONVERSIONS'], 'fromUnit');
   let unitsTo = getUniqueValues(['CONVERSIONS'], 'toUnit');
-  units = [...new Set([...units, ...unitsTo, 'kg', 'g', 'ltr', 'ml', 'pcs', 'box', 'عدد', 'بسته', 'كيلو', 'گرم'])];
+  
+  // استانداردسازی تمام واحدهای خوانده شده از شیت
+  const normalizedUnits = [...units, ...unitsTo].map(u => normalizeText(u));
+  const defaultUnits = ['kg', 'g', 'ltr', 'ml', 'pcs', 'box', 'عدد', 'بسته', 'کیلوگرم', 'گرم', 'كيلو', 'كيلوگرم'];
+  
+  // حذف موارد تکراری و خالی
+  units = [...new Set([...normalizedUnits, ...defaultUnits].map(u => normalizeText(u)))].filter(u => u !== '');
   
   const unitRule = SpreadsheetApp.newDataValidation().requireValueInList(units, true).setAllowInvalid(false).build();
   
