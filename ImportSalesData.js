@@ -6,7 +6,7 @@
 
 const IMPORT_SALES_CONFIG = {
   SOURCE_SHEET: 'import_items',
-  TARGET_SHEET: 'PURCHASES', // در صورت نیاز به 'SALES' تغییر دهید
+  TARGET_SHEET: 'SALES', // در صورت نیاز به 'SALES' تغییر دهید
   
   COL_DATE: 'تاريخ',
   COL_ITEM_CODE: 'کد کالا',
@@ -14,7 +14,18 @@ const IMPORT_SALES_CONFIG = {
   COL_QTY: 'تعداد',
   COL_UNIT: 'نام واحد',
   COL_PRICE: 'قيمت',
-  COL_WAREHOUSE: 'کد انبار'
+  COL_WAREHOUSE: 'کد انبار',
+  COL_RECEIPT_ID: 'شماره فاکتور', // ⚠️ حیاتی: نام دقیق هدر ستون شماره فیش در شیت import_items
+  
+  // 🪩 لیست کدهای اقلام پایه قلیان (هر چیزی که می‌تواند شارژ بگیرد)
+  HOOKAH_BASE_CODES: new Set([
+    '1801', '1802', '1803', '1804', '1805', '1810', '1813', '1814', '1815', '1816',
+    '1818', '1819', '1820', '1822', '1905', '1906', '1973', '1974', '1995', '2006',
+    '2009', '2015', '2016', '2017', '2018', '2019', '2020', '2021', '2022'
+  ]),
+  
+  // 🔋 لیست کدهای اقلام شارژ (که باید به قلیان اضافه و سپس از لیست حذف شوند)
+  HOOKAH_CHARGE_CODES: new Set(['1823', '1864', '1975'])
 };
 
 function importSalesDataToTargetSheet() {
@@ -45,22 +56,23 @@ function importSalesDataToTargetSheet() {
   const getColIdx = (name) => headers.indexOf(name);
   const idxDate  = getColIdx(IMPORT_SALES_CONFIG.COL_DATE);
   const idxCode  = getColIdx(IMPORT_SALES_CONFIG.COL_ITEM_CODE);
-  const idxName  = getColIdx(IMPORT_SALES_CONFIG.COL_ITEM_NAME);
+  const idxName  = getColIdx(IMPORT_SALES_CONFIG.COL_ITEM_NAME); 
   const idxQty   = getColIdx(IMPORT_SALES_CONFIG.COL_QTY);
   const idxUnit  = getColIdx(IMPORT_SALES_CONFIG.COL_UNIT);
   const idxPrice = getColIdx(IMPORT_SALES_CONFIG.COL_PRICE);
   const idxWh    = getColIdx(IMPORT_SALES_CONFIG.COL_WAREHOUSE);
-  
+  const idxReceipt = getColIdx(IMPORT_SALES_CONFIG.COL_RECEIPT_ID); 
+
   if (idxDate === -1 || idxCode === -1 || idxQty === -1) {
     ui.alert('❌ خطا: ستون‌های ضروری (تاريخ، کد کالا، تعداد) یافت نشدند.');
     return;
   }
   
-  // 1. شناسایی و ثبت خودکار واحدهای جدید در سیستم (بدون دستکاری اعتبارسنجی)
+  // 1. شناسایی و ثبت خودکار واحدهای جدید در سیستم
   const sourceUnits = new Set();
   rows.forEach(row => {
     if (idxUnit !== -1 && row[idxUnit]) {
-      sourceUnits.add(String(row[idxUnit]).trim());
+      sourceUnits.add(normalizeText(row[idxUnit]));
     }
   });
   syncUnitsToSystem(ss, Array.from(sourceUnits));
@@ -68,12 +80,16 @@ function importSalesDataToTargetSheet() {
   // 2. افزودن خودکار کالاهای جدید به شیت ITEMS
   addNewItemsToItemsSheet(ss, rows, idxCode, idxName, idxUnit);
   
-  // 3. پردازش و تبدیل داده‌ها
+  // 🪩 2.5. اعمال منطق ادغام شارژ سری قلیان (قبل از پردازش نهایی)
+  const processedRows = applyHookahChargeLogic(rows, idxReceipt, idxCode, idxQty);
+  
+  // 3. پردازش داده‌ها (استفاده از processedRows)
   const outputRows = [];
   let skippedCount = 0;
   
-  rows.forEach((row) => {
-    const jalaliDate = row[idxDate];
+  // ✅ FIX: حلقه به درستی بسته شد و کدهای تکراری حذف شدند
+  processedRows.forEach((row) => { 
+    let jalaliDate = row[idxDate];
     const itemCode   = row[idxCode];
     const qty        = row[idxQty];
     
@@ -82,7 +98,33 @@ function importSalesDataToTargetSheet() {
       return;
     }
     
-    const gregorianDate = convertJalaliToGregorian(jalaliDate);
+    let jalaliStr = '';
+    let gregorianDate = null;
+    
+    // 🛡️ FIX: مدیریت هوشمند آبجکت‌های Date که گوگل شیت از روی تاریخ جلالی ساخته است
+    if (jalaliDate instanceof Date && !isNaN(jalaliDate.getTime())) {
+        const jy = jalaliDate.getFullYear();
+        const jm = jalaliDate.getMonth() + 1;
+        const jd = jalaliDate.getDate();
+        
+        if (jy >= 1300 && jy <= 1500) {
+            // Sheets تاریخ جلالی را به عنوان میلادی parse کرده است
+            jalaliStr = `${jy}/${(jm < 10 ? '0' + jm : jm)}/${(jd < 10 ? '0' + jd : jd)}`;
+            gregorianDate = jalaliToGregorian(jy, jm, jd);
+        } else {
+            // این یک آبجکت Date میلادی معتبر است، آن را به رشته جلالی تبدیل می‌کنیم
+            jalaliStr = formatDateJalali(jalaliDate);
+            gregorianDate = jalaliDate;
+        }
+    } else {
+        // اگر رشته متنی یا عدد است، از تبدیل استاندارد استفاده می‌کنیم
+        gregorianDate = convertJalaliToGregorian(jalaliDate);
+        if (gregorianDate && gregorianDate instanceof Date) {
+            const [jy, jm, jd] = gregorianToJalali(gregorianDate.getFullYear(), gregorianDate.getMonth() + 1, gregorianDate.getDate());
+            jalaliStr = `${jy}/${(jm < 10 ? '0' + jm : jm)}/${(jd < 10 ? '0' + jd : jd)}`;
+        }
+    }
+
     if (!gregorianDate) {
       skippedCount++;
       return;
@@ -93,11 +135,11 @@ function importSalesDataToTargetSheet() {
     const warehouse  = idxWh    !== -1 ? (String(row[idxWh] || '').trim() || 'DEFAULT_WH') : 'DEFAULT_WH';
     
     if (IMPORT_SALES_CONFIG.TARGET_SHEET === 'SALES') {
-      outputRows.push([gregorianDate, jalaliDate, itemCode, parseNumber(qty), 'AUTO', warehouse, 0]);
+      outputRows.push([gregorianDate, jalaliStr, itemCode, parseNumber(qty), 'AUTO', warehouse, 0]);
     } else {
-      outputRows.push([gregorianDate, jalaliDate, itemCode, parseNumber(qty), unitName, totalCost, 'AUTO', '', warehouse, 0]);
+      outputRows.push([gregorianDate, jalaliStr, itemCode, parseNumber(qty), unitName, totalCost, 'AUTO', '', warehouse, 0]);
     }
-  });
+  }); // ✅ پایان حلقه processedRows
   
   if (outputRows.length === 0) {
     ui.alert('⚠️ هیچ ردیف معتبری برای انتقال یافت نشد.');
@@ -118,11 +160,10 @@ function importSalesDataToTargetSheet() {
     startRow = targetLastRow + 1;
   }
   
-  // نوشتن خالص داده‌ها (بدون هیچگونه دستکاری Data Validation)
   targetSheet.getRange(startRow, 1, outputRows.length, outputRows[0].length).setValues(outputRows);
   targetSheet.getRange(startRow, 1, outputRows.length, 1).setNumberFormat('yyyy/mm/dd');
   
-  // 5. فراخوانی تابع اعتبارسنجی از فایل اصلی برای به‌روزرسانی قوانین
+  // 5. فراخوانی تابع اعتبارسنجی از فایل اصلی
   try {
     setupDataValidation(); 
   } catch (e) {
@@ -138,35 +179,6 @@ function importSalesDataToTargetSheet() {
 // =================================================================
 // توابع کمکی (فقط مربوط به داده، بدون اعتبارسنجی)
 // =================================================================
-function syncUnitsToSystem(ss, newUnits) {
-  const convSheet = ss.getSheetByName('CONVERSIONS');
-  if (!convSheet) {
-    const sh = ss.insertSheet('CONVERSIONS');
-    sh.getRange(1, 1, 1, 3).setValues([['fromUnit', 'toUnit', 'factor']]).setFontWeight('bold').setBackground('#efefef');
-  }
-  
-  const data = convSheet.getDataRange().getValues();
-  const existingUnits = new Set();
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][0]) existingUnits.add(String(data[i][0]).trim().toLowerCase());
-    if (data[i][1]) existingUnits.add(String(data[i][1]).trim().toLowerCase());
-  }
-  
-  const toAdd = [];
-  newUnits.forEach(u => {
-    const uStr = String(u).trim().toLowerCase();
-    if (uStr && !existingUnits.has(uStr)) {
-      toAdd.push([u, u, 1]); 
-      existingUnits.add(uStr);
-    }
-  });
-  
-  if (toAdd.length > 0) {
-    const lastRow = convSheet.getLastRow();
-    const startRow = lastRow === 0 ? 2 : lastRow + 1;
-    convSheet.getRange(startRow, 1, toAdd.length, 3).setValues(toAdd);
-  }
-}
 
 function addNewItemsToItemsSheet(ss, sourceRows, idxCode, idxName, idxUnit) {
   const itemsSheet = ss.getSheetByName('ITEMS');
@@ -186,7 +198,7 @@ function addNewItemsToItemsSheet(ss, sourceRows, idxCode, idxName, idxUnit) {
     if (existingItems.has(codeStr) || newItemsMap.has(codeStr)) return;
     
     const name = idxName !== -1 ? String(row[idxName] || '').trim() : '';
-    const unit = idxUnit !== -1 ? String(row[idxUnit] || '').trim() : 'عدد';
+    const unit = idxUnit !== -1 ? normalizeText(row[idxUnit]) : 'عدد';
     newItemsMap.set(codeStr, { name: name || `کالای ${codeStr}`, unit: unit || 'عدد' });
   });
   
@@ -241,11 +253,8 @@ function updateDisplayNameColumn(itemsSheet, startRow, count) {
   }
 }
 
-
 /**
  * 🆕 فقط افزودن کالاهای جدید به ITEMS (بدون انتقال فروش)
- * این تابع ابتدا واحدهای جدید را استانداردسازی و به سیستم اضافه می‌کند،
- * سپس کالاهای جدید را با واحدهای استاندارد شده به شیت ITEMS می‌افزاید.
  */
 function syncNewItemsOnly() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -282,18 +291,15 @@ function syncNewItemsOnly() {
     return;
   }
 
-  // 1. استخراج و استانداردسازی واحدها
   const sourceUnits = new Set();
   rows.forEach(row => {
     if (idxUnit !== -1 && row[idxUnit]) {
-      sourceUnits.add(normalizeText(row[idxUnit])); // 🛡️ استانداردسازی واحد
+      sourceUnits.add(normalizeText(row[idxUnit])); 
     }
   });
   
-  // افزودن واحدهای استاندارد شده به سیستم
   syncUnitsToSystem(ss, Array.from(sourceUnits));
   
-  // 2. استخراج کالاهای جدید
   const existingItems = getExistingItemCodes(itemsSheet);
   const newItemsMap = new Map();
   
@@ -304,7 +310,6 @@ function syncNewItemsOnly() {
     if (existingItems.has(codeStr) || newItemsMap.has(codeStr)) return;
     
     const name = idxName !== -1 ? String(row[idxName] || '').trim() : '';
-    // 🛡️ استفاده از واحد استاندارد شده برای کالا
     const unit = idxUnit !== -1 ? normalizeText(row[idxUnit]) : 'عدد'; 
     
     newItemsMap.set(codeStr, { name: name || `کالای ${codeStr}`, unit: unit || 'عدد' });
@@ -315,7 +320,6 @@ function syncNewItemsOnly() {
     return;
   }
   
-  // 3. آماده‌سازی ردیف‌های جدید
   const newRows = [];
   newItemsMap.forEach((data, code) => {
     newRows.push([code, data.name, data.unit, 'PRODUCT', 0, '', 'FALSE', '']);
@@ -329,7 +333,6 @@ function syncNewItemsOnly() {
     itemsSheet.setFrozenRows(1);
   }
   
-  // 🛡️ 4. پاک‌سازی هسته‌ای (Nuclear Clear) اعتبارسنجی‌های شیت ITEMS قبل از نوشتن
   try {
     itemsSheet.getDataRange().clearDataValidations();
     SpreadsheetApp.flush(); 
@@ -337,11 +340,9 @@ function syncNewItemsOnly() {
     console.error("هشدار در پاک‌سازی اعتبارسنجی ITEMS: " + e.message);
   }
   
-  // 5. نوشتن داده‌ها
   itemsSheet.getRange(startRow, 1, newRows.length, 8).setValues(newRows).setBackground('#fff2cc');
   updateDisplayNameColumn(itemsSheet, startRow, newRows.length);
   
-  // 6. بازسازی قوانین صحیح (اکنون با واحدهای استاندارد شده)
   try {
     setupDataValidation(); 
   } catch (e) {
@@ -371,7 +372,6 @@ function syncUnitsToSystem(ss, newUnits) {
   const data = convSheet.getDataRange().getValues();
   const existingUnits = new Set();
   
-  // خواندن واحدهای موجود و استانداردسازی آن‌ها برای مقایسه
   for (let i = 1; i < data.length; i++) {
     if (data[i][0]) existingUnits.add(normalizeText(data[i][0]));
     if (data[i][1]) existingUnits.add(normalizeText(data[i][1]));
@@ -379,10 +379,9 @@ function syncUnitsToSystem(ss, newUnits) {
   
   const toAdd = [];
   newUnits.forEach(u => {
-    // 🛡️ واحد ورودی را استانداردسازی می‌کنیم
     const normalizedUnit = normalizeText(u); 
     if (normalizedUnit && !existingUnits.has(normalizedUnit)) {
-      toAdd.push([normalizedUnit, normalizedUnit, 1]); // افزودن واحد استاندارد شده
+      toAdd.push([normalizedUnit, normalizedUnit, 1]); 
       existingUnits.add(normalizedUnit);
     }
   });
@@ -394,4 +393,54 @@ function syncUnitsToSystem(ss, newUnits) {
   }
 }
 
+/**
+ * 🪩 منطق هوشمند ادغام شارژ قلیان بر اساس کد کالا
+ */
+function applyHookahChargeLogic(rows, idxReceipt, idxCode, idxQty) {
+  if (idxReceipt === -1) {
+    console.warn("⚠️ ستون 'شماره فیش' یافت نشد. منطق ادغام شارژ قلیان نادیده گرفته شد.");
+    return rows;
+  }
 
+  const receiptsMap = new Map();
+  rows.forEach((row, index) => {
+    const receiptId = String(row[idxReceipt] || '').trim();
+    if (!receiptId) return;
+    if (!receiptsMap.has(receiptId)) receiptsMap.set(receiptId, []);
+    receiptsMap.get(receiptId).push({ index, row });
+  });
+
+  const rowsToSkip = new Set(); 
+
+  receiptsMap.forEach((itemsInReceipt) => {
+    let baseHookahRowIndex = -1;
+    let baseHookahTotalQty = 0;
+    let totalChargeQty = 0;
+    const chargeRowIndices = [];
+
+    itemsInReceipt.forEach(item => {
+      const itemCode = String(item.row[idxCode] || '').trim();
+      const qty = parseNumber(item.row[idxQty]);
+
+      if (IMPORT_SALES_CONFIG.HOOKAH_CHARGE_CODES.has(itemCode)) {
+        totalChargeQty += qty;
+        chargeRowIndices.push(item.index);
+      } 
+      else if (IMPORT_SALES_CONFIG.HOOKAH_BASE_CODES.has(itemCode)) {
+        if (baseHookahRowIndex === -1) {
+          baseHookahRowIndex = item.index;
+          baseHookahTotalQty = qty;
+        } else {
+          baseHookahTotalQty += qty;
+        }
+      }
+    });
+
+    if (baseHookahRowIndex !== -1 && totalChargeQty > 0) {
+      rows[baseHookahRowIndex][idxQty] = baseHookahTotalQty + totalChargeQty;
+      chargeRowIndices.forEach(idx => rowsToSkip.add(idx));
+    }
+  });
+
+  return rows.filter((row, index) => !rowsToSkip.has(index));
+}

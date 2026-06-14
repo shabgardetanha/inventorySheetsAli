@@ -68,7 +68,23 @@ function formatDateJalali(date, format = 'yyyy/mm/dd') {
 
 function convertJalaliToGregorian(jalaliStr) {
   if (!jalaliStr) return null;
-  if (jalaliStr instanceof Date) return isNaN(jalaliStr.getTime()) ? null : jalaliStr;
+  
+  // 🛡️ FIX: اگر گوگل شیت تاریخ جلالی را به اشتباه به عنوان آبجکت Date (میلادی) ذخیره کرده باشد
+  if (jalaliStr instanceof Date) {
+    if (isNaN(jalaliStr.getTime())) return null;
+    const jy = jalaliStr.getFullYear();
+    const jm = jalaliStr.getMonth() + 1;
+    const jd = jalaliStr.getDate();
+    
+    // اگر سال بین 1300 تا 1500 است، یعنی یک تاریخ جلالی بوده که Sheets آن را میلادی در نظر گرفته
+    if (jy >= 1300 && jy <= 1500) {
+      return jalaliToGregorian(jy, jm, jd);
+    }
+    
+    // در غیر این صورت، احتمالاً یک تاریخ میلادی معتبر است
+    return jalaliStr;
+  }
+
   jalaliStr = String(jalaliStr).trim().replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d));
   const parts = jalaliStr.split(/[\/\-\.،,\s]+/).map(p => parseInt(p, 10));
   if (parts.length < 3 || parts.some(isNaN)) return null;
@@ -315,8 +331,21 @@ function parseNumber(v) {
 
 function parseDateStrict(v) {
   if (!v) return null;
+  
+  // 🛡️ FIX: مدیریت آبجکت‌های Date که از روی تاریخ جلالی ساخته شده‌اند
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    const jy = v.getFullYear();
+    if (jy >= 1300 && jy <= 1500) {
+      const jm = v.getMonth() + 1;
+      const jd = v.getDate();
+      const greg = jalaliToGregorian(jy, jm, jd);
+      return greg.setHours(0, 0, 0, 0);
+    }
+    return v.setHours(0, 0, 0, 0);
+  }
+
   const p = new Date(v); 
-  return isNaN(p.getTime()) ? null : p.setHours(0,0,0,0);
+  return isNaN(p.getTime()) ? null : p.setHours(0, 0, 0, 0);
 }
 
 function getSheetSafe(ss, name, headers, pKey) {
@@ -863,7 +892,7 @@ function setupDataValidation() {
   
   // حذف موارد تکراری و خالی
   units = [...new Set([...normalizedUnits, ...defaultUnits].map(u => normalizeText(u)))].filter(u => u !== '');
-  
+
   const unitRule = SpreadsheetApp.newDataValidation().requireValueInList(units, true).setAllowInvalid(false).build();
   
   const unitTargets = [
