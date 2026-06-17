@@ -83,13 +83,12 @@ function importSalesDataToTargetSheet() {
   // 🪩 2.5. اعمال منطق ادغام شارژ سری قلیان (قبل از پردازش نهایی)
   const processedRows = applyHookahChargeLogic(rows, idxReceipt, idxCode, idxQty);
   
-  // 3. پردازش داده‌ها (استفاده از processedRows)
+    // 3. پردازش داده‌ها
   const outputRows = [];
   let skippedCount = 0;
   
-  // ✅ FIX: حلقه به درستی بسته شد و کدهای تکراری حذف شدند
   processedRows.forEach((row) => { 
-    let jalaliDate = row[idxDate];
+    const jalaliDate = row[idxDate];
     const itemCode   = row[idxCode];
     const qty        = row[idxQty];
     
@@ -98,33 +97,7 @@ function importSalesDataToTargetSheet() {
       return;
     }
     
-    let jalaliStr = '';
-    let gregorianDate = null;
-    
-    // 🛡️ FIX: مدیریت هوشمند آبجکت‌های Date که گوگل شیت از روی تاریخ جلالی ساخته است
-    if (jalaliDate instanceof Date && !isNaN(jalaliDate.getTime())) {
-        const jy = jalaliDate.getFullYear();
-        const jm = jalaliDate.getMonth() + 1;
-        const jd = jalaliDate.getDate();
-        
-        if (jy >= 1300 && jy <= 1500) {
-            // Sheets تاریخ جلالی را به عنوان میلادی parse کرده است
-            jalaliStr = `${jy}/${(jm < 10 ? '0' + jm : jm)}/${(jd < 10 ? '0' + jd : jd)}`;
-            gregorianDate = jalaliToGregorian(jy, jm, jd);
-        } else {
-            // این یک آبجکت Date میلادی معتبر است، آن را به رشته جلالی تبدیل می‌کنیم
-            jalaliStr = formatDateJalali(jalaliDate);
-            gregorianDate = jalaliDate;
-        }
-    } else {
-        // اگر رشته متنی یا عدد است، از تبدیل استاندارد استفاده می‌کنیم
-        gregorianDate = convertJalaliToGregorian(jalaliDate);
-        if (gregorianDate && gregorianDate instanceof Date) {
-            const [jy, jm, jd] = gregorianToJalali(gregorianDate.getFullYear(), gregorianDate.getMonth() + 1, gregorianDate.getDate());
-            jalaliStr = `${jy}/${(jm < 10 ? '0' + jm : jm)}/${(jd < 10 ? '0' + jd : jd)}`;
-        }
-    }
-
+    const gregorianDate = convertJalaliToGregorian(jalaliDate);
     if (!gregorianDate) {
       skippedCount++;
       return;
@@ -134,12 +107,21 @@ function importSalesDataToTargetSheet() {
     const totalCost  = idxPrice !== -1 ? parseNumber(row[idxPrice]) : 0;
     const warehouse  = idxWh    !== -1 ? (String(row[idxWh] || '').trim() || 'DEFAULT_WH') : 'DEFAULT_WH';
     
+    // 🛡️ FIX: تبدیل تاریخ به رشته جلالی استاندارد برای نوشتن در شیت
+    let jalaliStr = '';
+    if (gregorianDate instanceof Date && !isNaN(gregorianDate.getTime())) {
+        jalaliStr = formatDateJalali(gregorianDate);
+    } else {
+        jalaliStr = String(jalaliDate);
+    }
+    
     if (IMPORT_SALES_CONFIG.TARGET_SHEET === 'SALES') {
       outputRows.push([gregorianDate, jalaliStr, itemCode, parseNumber(qty), 'AUTO', warehouse, 0]);
     } else {
       outputRows.push([gregorianDate, jalaliStr, itemCode, parseNumber(qty), unitName, totalCost, 'AUTO', '', warehouse, 0]);
     }
-  }); // ✅ پایان حلقه processedRows
+  });
+  
   
   if (outputRows.length === 0) {
     ui.alert('⚠️ هیچ ردیف معتبری برای انتقال یافت نشد.');

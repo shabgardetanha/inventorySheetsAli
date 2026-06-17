@@ -81,7 +81,7 @@ function convertJalaliToGregorian(jalaliStr) {
       return jalaliToGregorian(jy, jm, jd);
     }
     
-    // در غیر این صورت، احتمالاً یک تاریخ میلادی معتبر است
+    // در غیر این صورت، یک تاریخ میلادی معتبر است
     return jalaliStr;
   }
 
