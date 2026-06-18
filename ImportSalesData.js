@@ -2,6 +2,7 @@
  * 📄 فایل: ImportSalesData.gs
  * 📝 توضیحات: اسکریپت خالص ETL برای استخراج، تبدیل و بارگذاری داده‌ها.
  * ⚠️ توجه: مدیریت اعتبارسنجی (Data Validation) به اسکریپت اصلی واگذار شده است.
+ * 🆕 تغییرات: اضافه شدن مکانیزم نرمال‌سازی خودکار تاریخ جلالی به فرمت 14xx/xx/xx
  */
 
 const IMPORT_SALES_CONFIG = {
@@ -17,14 +18,17 @@ const IMPORT_SALES_CONFIG = {
   COL_WAREHOUSE: 'کد انبار',
   COL_RECEIPT_ID: 'شماره فاکتور', // ⚠️ حیاتی: نام دقیق هدر ستون شماره فیش در شیت import_items
   
-  // 🪩 لیست کدهای اقلام پایه قلیان (هر چیزی که می‌تواند شارژ بگیرد)
+  // 🎯 کد ثابت و یکپارچه برای تمام اقلام تجمیعی قلیان
+  HOOKAH_UNIFIED_CODE: 'قلیان', // می‌توانید به کد دلخواه مثل 'H-HK-UNIFIED' یا '9999' تغییر دهید
+  
+  // 🪩 لیست کدهای اقلام پایه قلیان
   HOOKAH_BASE_CODES: new Set([
     '1801', '1802', '1803', '1804', '1805', '1810', '1813', '1814', '1815', '1816',
     '1818', '1819', '1820', '1822', '1905', '1906', '1973', '1974', '1995', '2006',
     '2009', '2015', '2016', '2017', '2018', '2019', '2020', '2021', '2022'
   ]),
   
-  // 🔋 لیست کدهای اقلام شارژ (که باید به قلیان اضافه و سپس از لیست حذف شوند)
+  // 🔋 لیست کدهای اقلام شارژ
   HOOKAH_CHARGE_CODES: new Set(['1823', '1864', '1975'])
 };
 
@@ -80,19 +84,26 @@ function importSalesDataToTargetSheet() {
   // 2. افزودن خودکار کالاهای جدید به شیت ITEMS
   addNewItemsToItemsSheet(ss, rows, idxCode, idxName, idxUnit);
   
-  // 🪩 2.5. اعمال منطق تجمیع کامل قلیان و شارژها (فارغ از نوع کد)
-  const processedRows = applyHookahChargeLogic(rows, idxReceipt, idxCode, idxQty);
+  // 🪩 2.5. اعمال منطق تجمیع کامل قلیان و شارژها
+  const processedRows = applyHookahChargeLogic(rows, idxReceipt, idxCode, idxName, idxQty);
   
   // 3. پردازش داده‌ها (استفاده از processedRows)
   const outputRows = [];
   let skippedCount = 0;
   
   processedRows.forEach((row) => { 
-    const jalaliDate = row[idxDate];
+    let jalaliDateRaw = row[idxDate];
     const itemCode   = row[idxCode];
     const qty        = row[idxQty];
     
-    if (!jalaliDate || !itemCode || !qty) {
+    if (!jalaliDateRaw || !itemCode || !qty) {
+      skippedCount++;
+      return;
+    }
+    
+    // 🛡️ نرمال‌سازی تاریخ به فرمت استاندارد yyyy/mm/dd (مثل 1405/02/01)
+    const jalaliDate = normalizeJalaliDateString(jalaliDateRaw);
+    if (!jalaliDate) {
       skippedCount++;
       return;
     }
@@ -147,6 +158,44 @@ function importSalesDataToTargetSheet() {
            `📊 تعداد ${outputRows.length} ردیف منتقل شد.\n` +
            `⚠️ ${skippedCount} ردیف نادیده گرفته شد.\n\n` +
            `💡 کالاهای جدید و واحدهای جدید به سیستم اضافه و قوانین اعتبارسنجی به‌روز شدند.`);
+}
+
+// =================================================================
+// 🛡️ توابع کمکی نرمال‌سازی تاریخ
+// =================================================================
+
+/**
+ * 🛡️ تابع نرمال‌سازی تاریخ جلالی به فرمت استاندارد yyyy/mm/dd
+ * مثال: تبدیل "1405/2/1" یا "1405-2-1" به "1405/02/01"
+ */
+function normalizeJalaliDateString(dateStr) {
+  if (!dateStr) return null;
+  
+  // اگر آبجکت تاریخ (Date) مستقیماً از گوگل شیت خوانده شده بود
+  if (dateStr instanceof Date) {
+    if (isNaN(dateStr.getTime())) return null;
+    return formatDateJalali(dateStr, 'yyyy/mm/dd');
+  }
+  
+  // اگر عدد (تایم‌استمپ) بود
+  if (typeof dateStr === 'number') {
+    return formatDateJalali(new Date(dateStr), 'yyyy/mm/dd');
+  }
+
+  // اگر رشته متنی بود (مثل "1405/2/1" یا "1405/02/01")
+  let str = String(dateStr).trim()
+    .replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))
+    .replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d));
+  
+  const parts = str.split(/[\/\-\.،,\s]+/).map(p => parseInt(p, 10));
+  if (parts.length < 3 || parts.some(isNaN)) return null;
+  
+  const [jy, jm, jd] = parts;
+  // اعتبارسنجی بازه‌های مجاز
+  if (jy < 1300 || jy > 1500 || jm < 1 || jm > 12 || jd < 1 || jd > 31) return null;
+  
+  const pad = (n) => n < 10 ? '0' + n : n;
+  return `${jy}/${pad(jm)}/${pad(jd)}`;
 }
 
 // =================================================================
@@ -367,11 +416,10 @@ function syncUnitsToSystem(ss, newUnits) {
 }
 
 /**
- * 🪩 منطق هوشمند تجمیع کامل اقلام قلیان و شارژها (نسخه جدید)
- * در هر فیش، تمام آیتم‌های قلیان (پایه و شارژ) فارغ از نوع کد، با هم جمع شده 
- * و در قالب یک ردیف (اولین کد قلیان موجود در فیش) ثبت می‌شوند.
+ * 🪩 منطق استاندارد تجمیع اقلام قلیان (نسخه Enterprise)
+ * تمام ردیف‌های قلیان/شارژ حذف شده و یک ردیف جدید با کد ثابت (HOOKAH_UNIFIED_CODE) ایجاد می‌شود.
  */
-function applyHookahChargeLogic(rows, idxReceipt, idxCode, idxQty) {
+function applyHookahChargeLogic(rows, idxReceipt, idxCode, idxName, idxQty) {
   if (idxReceipt === -1) {
     console.warn("⚠️ ستون 'شماره فیش' یافت نشد. منطق تجمیع قلیان نادیده گرفته شد.");
     return rows;
@@ -387,45 +435,50 @@ function applyHookahChargeLogic(rows, idxReceipt, idxCode, idxQty) {
   });
 
   const rowsToSkip = new Set(); 
+  const newUnifiedRows = []; // ردیف‌های تجمیعی جدید که باید اضافه شوند
 
   receiptsMap.forEach((itemsInReceipt) => {
-    let firstHookahRowIndex = -1;
     let totalHookahQty = 0;
     const hookahRowIndices = [];
+    let representativeRow = null; // الگویی برای کپی اطلاعات (تاریخ، انبار، فیش و...)
 
     // بررسی تمام آیتم‌های داخل یک فیش
     itemsInReceipt.forEach(item => {
       const itemCode = String(item.row[idxCode] || '').trim();
       const qty = parseNumber(item.row[idxQty]);
 
-      // 🔥 تغییر جدید: بررسی همزمان کدهای پایه و شارژ قلیان (تجمیع کامل فارغ از نوع)
+      // 🔥 تشخیص یکپارچه: کد پایه یا شارژ قلیان
       if (IMPORT_SALES_CONFIG.HOOKAH_BASE_CODES.has(itemCode) || 
           IMPORT_SALES_CONFIG.HOOKAH_CHARGE_CODES.has(itemCode)) {
         
         hookahRowIndices.push(item.index);
         totalHookahQty += qty;
 
-        // اولین آیتم قلیان پیدا شده را به عنوان نماینده این فیش نگه می‌داریم
-        if (firstHookahRowIndex === -1) {
-          firstHookahRowIndex = item.index;
+        // اولین ردیف قلیان فقط به عنوان الگو برای کپی سایر ستون‌ها (تاریخ، انبار و...)
+        if (!representativeRow) {
+          representativeRow = item.row;
         }
       }
     });
 
     // اگر در این فیش حداقل یک آیتم قلیان یا شارژ وجود داشت
-    if (firstHookahRowIndex !== -1) {
-      // مقدار ردیف نماینده را برابر با کل مجموع قرار می‌دهیم (مثلاً ۵ تا قلیان)
-      rows[firstHookahRowIndex][idxQty] = totalHookahQty;
+    if (representativeRow && totalHookahQty > 0) {
+      // 🆕 ساخت یک ردیف کاملاً جدید با کد ثابت
+      const unifiedRow = [...representativeRow]; // کپی از ردیف اصلی
+      unifiedRow[idxCode] = IMPORT_SALES_CONFIG.HOOKAH_UNIFIED_CODE; // کد ثابت
+      if (idxName !== -1) {
+        unifiedRow[idxName] = 'قلیان (تجمیعی)'; // نام ثابت
+      }
+      unifiedRow[idxQty] = totalHookahQty; // مقدار جمع کل
       
-      // تمام ردیف‌های دیگر قلیان و شارژ در این فیش را برای حذف علامت‌گذاری می‌کنیم
-      hookahRowIndices.forEach(idx => {
-        if (idx !== firstHookahRowIndex) {
-          rowsToSkip.add(idx);
-        }
-      });
+      newUnifiedRows.push(unifiedRow);
+      
+      // ✂️ علامت‌گذاری تمام ردیف‌های اصلی قلیان/شارژ برای حذف
+      hookahRowIndices.forEach(idx => rowsToSkip.add(idx));
     }
   });
 
-  // فیلتر کردن ردیف‌های حذف شده و بازگرداندن لیست نهایی
-  return rows.filter((row, index) => !rowsToSkip.has(index));
+  // 🔄 فیلتر کردن ردیف‌های حذف شده + اضافه کردن ردیف‌های تجمیعی جدید
+  const filteredRows = rows.filter((row, index) => !rowsToSkip.has(index));
+  return [...filteredRows, ...newUnifiedRows];
 }
