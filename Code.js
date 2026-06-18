@@ -776,26 +776,14 @@ function setupDataValidation() {
   let appliedCount = 0;
   const startTime = new Date();
 
-  // 🛡️ نرمال‌سازی هدر
   const normHeader = h => String(h||'').replace(/\s+/g,'').replace(/[_\-\u200c]/g,'').toLowerCase();
 
   // ─────────────────────────────────────────────
-  // 🆕 مرحله ۱: ایجاد شیت کمکی برای لیست‌های کشویی
-  // استفاده از requireValueInRange به جای requireValueInList (بسیار سریع‌تر)
+  // 🆕 مرحله ۱: شیت کمکی برای لیست‌های کشویی
   // ─────────────────────────────────────────────
   const helperSheet = getOrCreateSheet(ss, '_DV_LISTS');
   helperSheet.clear();
-  helperSheet.hideSheet(); // مخفی کردن شیت کمکی
-
-  // ─────────────────────────────────────────────
-  // 🆕 مرحله ۲: جمع‌آوری یکپارچه مقادیر یکتا
-  // ─────────────────────────────────────────────
-  const normHeaderCol = (sheet, colName) => {
-    if (!sheet || sheet.getLastRow() < 1) return -1;
-    const lastCol = sheet.getLastColumn() || 1;
-    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-    return headers.map(normHeader).indexOf(normHeader(colName));
-  };
+  helperSheet.hideSheet();
 
   const getUniqueValues = (sheetNames, colName) => {
     const values = new Set();
@@ -807,7 +795,6 @@ function setupDataValidation() {
       const headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
       const colIdx = headers.map(normHeader).indexOf(targetNorm);
       if (colIdx !== -1) {
-        // 🚀 خواندن یکجا به جای حلقه
         const vals = sh.getRange(2, colIdx + 1, sh.getLastRow() - 1, 1).getValues();
         for (let i = 0; i < vals.length; i++) {
           const v = vals[i][0];
@@ -819,56 +806,48 @@ function setupDataValidation() {
   };
 
   // ─────────────────────────────────────────────
-  // 🆕 مرحله ۳: نوشتن لیست‌ها در شیت کمکی (فقط یک بار write)
+  // مرحله ۲: جمع‌آوری و نوشتن لیست‌ها در شیت کمکی
   // ─────────────────────────────────────────────
   
-  // 3.1 واحدها
+  // 2.1 واحدها
   let units = getUniqueValues(['CONVERSIONS'], 'fromUnit');
   let unitsTo = getUniqueValues(['CONVERSIONS'], 'toUnit');
   const normalizedUnits = [...units, ...unitsTo].map(u => normalizeText(u));
   const defaultUnits = ['kg', 'g', 'ltr', 'ml', 'pcs', 'box', 'عدد', 'بسته', 'کیلوگرم', 'گرم', 'كيلو', 'كيلوگرم'];
   units = [...new Set([...normalizedUnits, ...defaultUnits].map(u => normalizeText(u)))].filter(u => u !== '');
   
-  // نوشتن واحدها در ستون A شیت کمکی
   if (units.length > 0) {
-    const unitData = units.map(u => [u]);
-    helperSheet.getRange(1, 1, unitData.length, 1).setValues(unitData);
+    helperSheet.getRange(1, 1, units.length, 1).setValues(units.map(u => [u]));
   }
   const unitRange = helperSheet.getRange(1, 1, Math.max(units.length, 1), 1);
   const unitRule = SpreadsheetApp.newDataValidation()
-    .requireValueInRange(unitRange, true)
-    .setAllowInvalid(false)
-    .setHelpText('واحد را از لیست انتخاب کنید.')
-    .build();
+    .requireValueInRange(unitRange, true).setAllowInvalid(false).setHelpText('واحد را انتخاب کنید.').build();
 
-  // 3.2 انبارها
-  let warehouses = getUniqueValues(['PURCHASES', 'PRODUCTION', 'SALES', 'WASTE', 'STOCK', 'OPENING_BALANCES'], 'warehouseCode');
+  // 2.2 انبارها
+  let warehouses = getUniqueValues(['PURCHASES', 'PRODUCTION', 'SALES', 'WASTE', 'STOCK_TAKE', 'OPENING_BALANCES'], 'warehouseCode');
   if (warehouses.length === 0) warehouses = ['DEFAULT_WH', 'MAIN_WH', 'COLD_STORAGE', 'انبار اصلی'];
   
-  // نوشتن انبارها در ستون B شیت کمکی
   if (warehouses.length > 0) {
-    const whData = warehouses.map(w => [w]);
-    helperSheet.getRange(1, 2, whData.length, 1).setValues(whData);
+    helperSheet.getRange(1, 2, warehouses.length, 1).setValues(warehouses.map(w => [w]));
   }
   const whRange = helperSheet.getRange(1, 2, Math.max(warehouses.length, 1), 1);
   const whRule = SpreadsheetApp.newDataValidation()
-    .requireValueInRange(whRange, true)
-    .setAllowInvalid(false)
-    .setHelpText('انبار را از لیست انتخاب کنید.')
-    .build();
+    .requireValueInRange(whRange, true).setAllowInvalid(false).setHelpText('انبار را انتخاب کنید.').build();
 
-  // 3.3 نوع کالا و بولین
+  // 2.3 نوع کالا و بولین
   const typeRule = SpreadsheetApp.newDataValidation().requireValueInList(['RAW', 'PACKAGED', 'PRODUCT'], true).build();
   const boolRule = SpreadsheetApp.newDataValidation().requireValueInList(['TRUE', 'FALSE'], true).build();
 
   // ─────────────────────────────────────────────
-  // 🆕 مرحله ۴: تابع اعمال اعتبارسنجی بهینه‌شده
+  // مرحله ۳: تابع اعمال اعتبارسنجی بهینه
   // ─────────────────────────────────────────────
   function applyValidation(sheetName, colName, rule) {
     const sheet = ss.getSheetByName(sheetName);
-    if (!sheet) return false;
+    if (!sheet) {
+      console.warn(`⚠️ شیت '${sheetName}' یافت نشد. لیست کشویی برای ستون '${colName}' اعمال نشد.`);
+      return false;
+    }
     
-    // 🚀 پاک کردن اعتبارسنجی‌های قبلی فقط یک بار
     try { sheet.getDataRange().clearDataValidations(); } catch(e) {}
     
     const lastCol = sheet.getLastColumn() || 1;
@@ -876,7 +855,6 @@ function setupDataValidation() {
     const colIdx = headers.map(normHeader).indexOf(normHeader(colName));
     
     if (colIdx !== -1) {
-      // 🚀 کاهش محدوده: فقط lastRow + 50 (به جای 500)
       const targetRows = Math.max(sheet.getLastRow(), 2) + 50;
       sheet.getRange(2, colIdx + 1, targetRows, 1).setDataValidation(rule);
       return true;
@@ -885,7 +863,7 @@ function setupDataValidation() {
   }
 
   // ─────────────────────────────────────────────
-  // مرحله ۵: اعمال اعتبارسنجی کالاهای موجود (displayName)
+  // مرحله ۴: اعتبارسنجی کالاهای موجود (displayName)
   // ─────────────────────────────────────────────
   const itemsSh = ss.getSheetByName('ITEMS');
   if (itemsSh && itemsSh.getLastRow() >= 2) {
@@ -901,29 +879,26 @@ function setupDataValidation() {
       itemsSh.getRange(1, displayNameCol + 1).setValue('displayName').setFontWeight('bold');
     }
     
-    // 🚀 به‌روزرسانی displayName به صورت یکجا (نه سلول به سلول)
     if (lastRow >= 2) {
       const itemData = itemsSh.getRange(2, 1, lastRow - 1, 2).getValues();
-      const displayUpdates = [];
-      for (let i = 0; i < itemData.length; i++) {
-        const code = itemData[i][0];
-        const name = itemData[i][1];
-        displayUpdates.push([(code && name) ? `${name} | ${code}` : '']);
-      }
+      const displayUpdates = itemData.map(r => [(r[0] && r[1]) ? `${r[1]} | ${r[0]}` : '']);
       itemsSh.getRange(2, displayNameCol + 1, displayUpdates.length, 1).setValues(displayUpdates);
     }
     
     const displayRange = itemsSh.getRange(2, displayNameCol + 1, lastRow - 1, 1);
     const itemRule = SpreadsheetApp.newDataValidation()
-      .requireValueInRange(displayRange, true)
-      .setAllowInvalid(false)
-      .build();
+      .requireValueInRange(displayRange, true).setAllowInvalid(false).build();
     
+    // 🆕 اصلاح نام STOCK_TAKE
     const itemTargets = [
-      { sheet: 'PURCHASES', col: 'itemCode' }, { sheet: 'SALES', col: 'itemCode' },
-      { sheet: 'WASTE', col: 'itemCode' }, { sheet: 'STOCK', col: 'itemCode' },
-      { sheet: 'OPENING_BALANCES', col: 'itemCode' }, { sheet: 'PRODUCTION', col: 'menuCode' },
-      { sheet: 'RECIPES', col: 'menuCode' }, { sheet: 'RECIPES', col: 'ingCode' }
+      { sheet: 'PURCHASES', col: 'itemCode' }, 
+      { sheet: 'SALES', col: 'itemCode' },
+      { sheet: 'WASTE', col: 'itemCode' }, 
+      { sheet: 'STOCK_TAKE', col: 'itemCode' },       // 🆕 اصلاح شد
+      { sheet: 'OPENING_BALANCES', col: 'itemCode' }, 
+      { sheet: 'PRODUCTION', col: 'menuCode' },
+      { sheet: 'RECIPES', col: 'menuCode' }, 
+      { sheet: 'RECIPES', col: 'ingCode' }
     ];
     
     itemTargets.forEach(t => {
@@ -932,38 +907,47 @@ function setupDataValidation() {
   }
 
   // ─────────────────────────────────────────────
-  // مرحله ۶: اعمال واحدها (با requireValueInRange - سریع)
+  // مرحله ۵: اعمال واحدها
   // ─────────────────────────────────────────────
+  // 🆕 اضافه شدن RECIPES و اصلاح STOCK_TAKE
   const unitTargets = [
-    { sheet: 'ITEMS', col: 'baseUnit' }, { sheet: 'ITEMS', col: 'secondaryUnit' },
-    { sheet: 'CONVERSIONS', col: 'fromUnit' }, { sheet: 'CONVERSIONS', col: 'toUnit' },
-    { sheet: 'PURCHASES', col: 'unit' }, { sheet: 'WASTE', col: 'unit' }, { sheet: 'STOCK', col: 'unit' }
+    { sheet: 'ITEMS', col: 'baseUnit' }, 
+    { sheet: 'ITEMS', col: 'secondaryUnit' },
+    { sheet: 'CONVERSIONS', col: 'fromUnit' }, 
+    { sheet: 'CONVERSIONS', col: 'toUnit' },
+    { sheet: 'PURCHASES', col: 'unit' }, 
+    { sheet: 'WASTE', col: 'unit' }, 
+    { sheet: 'STOCK_TAKE', col: 'unit' },      // 🆕 اصلاح شد (قبلاً 'STOCK' بود)
+    { sheet: 'RECIPES', col: 'unit' }          // 🆕 اضافه شد
   ];
   unitTargets.forEach(t => {
     if (applyValidation(t.sheet, t.col, unitRule)) appliedCount++;
   });
 
   // ─────────────────────────────────────────────
-  // مرحله ۷: اعمال انبارها
+  // مرحله ۶: اعمال انبارها
   // ─────────────────────────────────────────────
+  // 🆕 اصلاح نام STOCK_TAKE
   const whTargets = [
-    { sheet: 'PURCHASES', col: 'warehouseCode' }, { sheet: 'PRODUCTION', col: 'warehouseCode' },
-    { sheet: 'SALES', col: 'warehouseCode' }, { sheet: 'WASTE', col: 'warehouseCode' },
-    { sheet: 'STOCK', col: 'warehouseCode' }, { sheet: 'OPENING_BALANCES', col: 'warehouseCode' }
+    { sheet: 'PURCHASES', col: 'warehouseCode' }, 
+    { sheet: 'PRODUCTION', col: 'warehouseCode' },
+    { sheet: 'SALES', col: 'warehouseCode' }, 
+    { sheet: 'WASTE', col: 'warehouseCode' },
+    { sheet: 'STOCK_TAKE', col: 'warehouseCode' },      // 🆕 اصلاح شد
+    { sheet: 'OPENING_BALANCES', col: 'warehouseCode' }
   ];
   whTargets.forEach(t => {
     if (applyValidation(t.sheet, t.col, whRule)) appliedCount++;
   });
 
   // ─────────────────────────────────────────────
-  // مرحله ۸: نوع کالا و بولین در ITEMS
+  // مرحله ۷: نوع کالا و بولین در ITEMS
   // ─────────────────────────────────────────────
   if (itemsSh) {
     if (applyValidation('ITEMS', 'itemType', typeRule)) appliedCount++;
     if (applyValidation('ITEMS', 'isCatchWeight', boolRule)) appliedCount++;
   }
 
-  // 🚀 فقط یک بار flush در انتها
   SpreadsheetApp.flush();
   
   const elapsed = ((new Date() - startTime) / 1000).toFixed(1);
