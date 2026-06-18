@@ -465,7 +465,7 @@ function applyHookahChargeLogic(rows, idxReceipt, idxCode, idxName, idxQty) {
     if (representativeRow && totalHookahQty > 0) {
       // 🆕 ساخت یک ردیف کاملاً جدید با کد ثابت
       const unifiedRow = [...representativeRow]; // کپی از ردیف اصلی
-      unifiedRow[idxCode] = IMPORT_SALES_CONFIG.HOOKAH_UNIFIED_CODE; // کد ثابت
+      unifiedRow[idxCode] = IMPORT_SALEًS_CONFIG.HOOKAH_UNIFIED_CODE; // کد ثابت
       if (idxName !== -1) {
         unifiedRow[idxName] = 'قلیان (تجمیعی)'; // نام ثابت
       }
