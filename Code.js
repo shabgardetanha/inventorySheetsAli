@@ -167,23 +167,41 @@ function runFinancialEngine() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const errorLog = [], suspenseLog = [];
   try {
+    // 🆕 بارگذاری کامل تمام داده‌ها شامل CONVERSIONS و RECIPES
     const rawData = loadAllData(ss, errorLog);
+    
+    if (errorLog.length > 0) {
+      console.warn('⚠️ خطاهای بارگذاری داده:', errorLog);
+    }
+    
     const itemsMap = buildItemsMap(rawData.ITEMS, errorLog);
-    const convGraph = buildConversionGraph(rawData.CONVERSIONS);
+    
+    // 🆕 بررسی وجود CONVERSIONS قبل از استفاده
+    if (!rawData.CONVERSIONS || rawData.CONVERSIONS.length === 0) {
+      errorLog.push('[هشدار] شیت CONVERSIONS خالی است یا وجود ندارد. تبدیل واحدها غیرفعال خواهد بود.');
+    }
+    const convGraph = buildConversionGraph(rawData.CONVERSIONS || []);
+    
     generatePackagingBOMInternal(rawData.ITEMS, itemsMap, convGraph, errorLog);
     
     const cachedBOM = loadCachedBOM(ss);
     if (Object.keys(cachedBOM).length === 0 && rawData.PRODUCTION.length > 0) {
-      throw new Error('کش BOM خالی است. لطفاً ابتدا کش را به‌روزرسانی کنید.');
+      throw new Error('کش BOM خالی است. لطفاً ابتدا از منوی سیستم، گزینه "به‌روزرسانی کش فرمول ساخت (BOM)" را اجرا کنید.');
     }
 
     const ledger = buildUnifiedLedger(rawData, cachedBOM, itemsMap, convGraph, errorLog); 
     const { inventory, dailyMetrics } = processLedgerAndAudit(ledger, itemsMap, convGraph, suspenseLog, errorLog);
+    
+    // 🆕 ارسال errorLog و suspenseLog به flushReports
     flushReports(ss, inventory, dailyMetrics, suspenseLog, errorLog, itemsMap);
     
     SpreadsheetApp.getUi().alert(`✅ محاسبات مالی (نسخه ${CONFIG.VERSION}) با موفقیت انجام شد.\nتاریخ هدف: ${dailyMetrics.targetDate}`);
-  } catch (e) { logCriticalError(ss, e); }
+  } catch (e) {
+    // 🆕 ارسال errorLog به logCriticalError برای ثبت کامل
+    logCriticalError(ss, e, errorLog);
+  }
 }
+
 
 /* ==========================================
    3. BOM & PACKAGING (حفظ شده از نسخه ۷.۳)
@@ -293,6 +311,8 @@ function generatePackagingBOMInternal(itemsData, itemsMap, convGraph, errorLog) 
 function loadAllData(ss, errorLog) {
   return {
     ITEMS: getSheetSafe(ss, CONFIG.SHEETS.ITEMS, ['itemCode', 'itemName', 'baseUnit', 'itemType', 'packageSize', 'parentItem', 'isCatchWeight', 'secondaryUnit'], 'itemCode'),
+    RECIPES: getSheetSafe(ss, CONFIG.SHEETS.RECIPES, ['menuCode', 'ingCode', 'qty', 'unit', 'yield'], 'menuCode'),
+    CONVERSIONS: getSheetSafe(ss, CONFIG.SHEETS.CONVERSIONS, ['fromUnit', 'toUnit', 'factor'], 'fromUnit'),
     OPENING: getSheetSafe(ss, CONFIG.SHEETS.OPENING, ['itemCode', 'qty', 'wac', 'val', 'batchNumber', 'expiryDate', 'warehouseCode', 'catchWeight'], 'itemCode'),
     PURCHASES: getSheetSafe(ss, CONFIG.SHEETS.PURCHASES, ['date', 'itemCode', 'qty', 'unit', 'totalCost', 'batchNumber', 'expiryDate', 'warehouseCode', 'catchWeight'], 'itemCode'),
     PRODUCTION: getSheetSafe(ss, CONFIG.SHEETS.PRODUCTION, ['date', 'menuCode', 'qtyProduced', 'batchNumber', 'expiryDate', 'warehouseCode', 'catchWeight'], 'menuCode'),
@@ -331,7 +351,7 @@ function getSheetSafe(ss, name, headers, pKey) {
     const obj = { _sourceRow: i + 2, _sheetName: name };
     headers.forEach((h, j) => {
       let v = (cIdx[j] >= 0 && cIdx[j] < r.length) ? r[cIdx[j]] : '';
-      if ((h === 'itemCode' || h === 'menuCode' || h === 'ingCode') && typeof v === 'string') {
+      if ((h === 'itemCode' || h === 'menuCode' || h === 'ingCode' || h === 'parentItem') && typeof v === 'string') {
         const match = v.match(/\|\s*([^\|]+)$/);
         if (match) v = match[1].trim();
       }
@@ -760,11 +780,46 @@ function flushReports(ss, inv, metrics, suspenseLog, errorLog, itemsMap) {
   }
 }
 
-function logCriticalError(ss, e) {
+// ─────────────────────────────────────────────
+// 🆕 ثبت خطای بحرانی (اصلاح‌شده - حفظ errorLog)
+// ─────────────────────────────────────────────
+function logCriticalError(ss, e, errorLog = []) {
   const es = getOrCreateSheet(ss, CONFIG.SHEETS.ERRORS);
   es.clear();
-  es.getRange(1, 1).setValue('Critical Crash: ' + (e && e.message ? e.message : String(e)));
-  SpreadsheetApp.getUi().alert('❌ خطای پردازشی رخ داد. بخش ERRORS_LOG را بررسی کنید.');
+  
+  // 🆕 نوشتن هدر
+  es.getRange(1, 1, 1, 2).setValues([['نوع', 'پیام خطا']])
+    .setFontWeight('bold').setBackground('#ffcccc');
+  
+  // 🆕 نوشتن خطای اصلی
+  const errorMsg = (e && e.message) ? e.message : String(e);
+  const errorStack = (e && e.stack) ? e.stack.substring(0, 500) : '';
+  
+  const outputRows = [
+    ['🔴 خطای بحرانی (Crash)', errorMsg],
+    ['📍 Stack Trace', errorStack]
+  ];
+  
+  // 🆕 اضافه کردن errorLog اگر وجود داشته باشد
+  if (errorLog && errorLog.length > 0) {
+    outputRows.push(['', '']); // خط خالی
+    outputRows.push(['⚠️ هشدارهای پردازش', `تعداد: ${errorLog.length}`]);
+    errorLog.forEach(err => {
+      outputRows.push(['⚠️ هشدار', String(err)]);
+    });
+  }
+  
+  // نوشتن تمام ردیف‌ها
+  if (outputRows.length > 0) {
+    es.getRange(2, 1, outputRows.length, 2).setValues(outputRows);
+  }
+  
+  // 🆕 فعال کردن wrap text برای خوانایی بهتر
+  es.getRange(2, 1, outputRows.length, 2).setWrap(true);
+  es.setColumnWidth(1, 200);
+  es.setColumnWidth(2, 600);
+  
+  SpreadsheetApp.getUi().alert(`❌ خطای پردازشی رخ داد.\n\nجزئیات در شیت '${CONFIG.SHEETS.ERRORS}' ثبت شد.\n\n${errorMsg.substring(0, 200)}`);
 }
 
 /* ==========================================
@@ -894,11 +949,13 @@ function setupDataValidation() {
       { sheet: 'PURCHASES', col: 'itemCode' }, 
       { sheet: 'SALES', col: 'itemCode' },
       { sheet: 'WASTE', col: 'itemCode' }, 
-      { sheet: 'STOCK_TAKE', col: 'itemCode' },       // 🆕 اصلاح شد
+      { sheet: 'STOCK_TAKE', col: 'itemCode' },       
       { sheet: 'OPENING_BALANCES', col: 'itemCode' }, 
       { sheet: 'PRODUCTION', col: 'menuCode' },
       { sheet: 'RECIPES', col: 'menuCode' }, 
-      { sheet: 'RECIPES', col: 'ingCode' }
+      { sheet: 'RECIPES', col: 'ingCode' },
+      { sheet: 'ITEMS', col: 'parentItem' } // 🆕 اضافه شد: لیست کشویی برای کالای والد
+
     ];
     
     itemTargets.forEach(t => {
