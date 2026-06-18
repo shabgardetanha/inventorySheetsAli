@@ -266,33 +266,62 @@ function generatePackagingBOMInternal(itemsData, itemsMap, convGraph, errorLog) 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const recipesSh = getOrCreateSheet(ss, CONFIG.SHEETS.RECIPES);
   const existingRecipes = new Set();
+  
   if (recipesSh.getLastRow() > 1) {
     const vals = recipesSh.getRange(2, 1, recipesSh.getLastRow() - 1, 2).getValues();
-    vals.forEach(row => { if (row[0] && row[1]) existingRecipes.add(`${row[0]}|${row[1]}`); });
+    vals.forEach(row => { 
+      // 🆕 استخراج کد خالص از فرمت displayName برای مقایسه دقیق
+      let m = String(row[0] || '');
+      let i = String(row[1] || '');
+      const matchM = m.match(/\|\s*([^\|]+)$/);
+      const matchI = i.match(/\|\s*([^\|]+)$/);
+      if (matchM) m = matchM[1].trim();
+      if (matchI) i = matchI[1].trim();
+      if (m && i) existingRecipes.add(`${m}|${i}`); 
+    });
   }
+  
   const packagedItems = itemsData.filter(item => String(item.itemType || '').toUpperCase() === CONFIG.ITEM_TYPES.PACKAGED && item.parentItem && item.packageSize);
   if (packagedItems.length === 0) return 0;
+  
   const newRecipes = [];
   let generatedCount = 0;
+  
   packagedItems.forEach(pkgItem => {
     const menuCode = String(pkgItem.itemCode);
     const parentCode = String(pkgItem.parentItem);
     const packageSize = parseNumber(pkgItem.packageSize);
-    if (!itemsMap[parentCode]) { errorLog.push(`[خطا] کالای والد ${parentCode} برای ${menuCode} یافت نشد.`); return; }
+    
+    if (!itemsMap[parentCode]) { 
+      errorLog.push(`[خطا] کالای والد ${parentCode} برای ${menuCode} یافت نشد.`); 
+      return; 
+    }
+    
     const parentUnit = itemsMap[parentCode].baseUnit;
     const pkgUnit = pkgItem.baseUnit || 'package';
     const recipeKey = `${menuCode}|${parentCode}`;
+    
     if (existingRecipes.has(recipeKey)) return;
+    
     let qtyNeeded = packageSize;
     if (pkgUnit.toLowerCase() !== parentUnit.toLowerCase()) {
       const conv = getConversion(convGraph, pkgUnit, parentUnit);
       if (conv) qtyNeeded = packageSize * conv.factor;
       else errorLog.push(`[هشدار] تبدیل ${pkgUnit} به ${parentUnit} یافت نشد.`);
     }
-    newRecipes.push([menuCode, parentCode, qtyNeeded, parentUnit, 100]);
+    
+    // 🆕 ساخت فرمت displayName برای جلوگیری از نقض اعتبارسنجی (Data Validation)
+    const menuName = itemsMap[menuCode] ? itemsMap[menuCode].itemName : menuCode;
+    const parentName = itemsMap[parentCode] ? itemsMap[parentCode].itemName : parentCode;
+    const menuDisplayName = `${menuName} | ${menuCode}`;
+    const parentDisplayName = `${parentName} | ${parentCode}`;
+    
+    // 🆕 نوشتن با فرمت استاندارد displayName
+    newRecipes.push([menuDisplayName, parentDisplayName, qtyNeeded, parentUnit, 100]);
     existingRecipes.add(recipeKey);
     generatedCount++;
   });
+  
   if (newRecipes.length > 0) {
     const lastRow = recipesSh.getLastRow();
     const startRow = lastRow === 0 ? 2 : lastRow + 1;
