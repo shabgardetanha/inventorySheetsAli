@@ -80,10 +80,10 @@ function importSalesDataToTargetSheet() {
   // 2. افزودن خودکار کالاهای جدید به شیت ITEMS
   addNewItemsToItemsSheet(ss, rows, idxCode, idxName, idxUnit);
   
-  // 🪩 2.5. اعمال منطق ادغام شارژ سری قلیان (قبل از پردازش نهایی)
+  // 🪩 2.5. اعمال منطق تجمیع کامل قلیان و شارژها (فارغ از نوع کد)
   const processedRows = applyHookahChargeLogic(rows, idxReceipt, idxCode, idxQty);
   
-    // 3. پردازش داده‌ها
+  // 3. پردازش داده‌ها (استفاده از processedRows)
   const outputRows = [];
   let skippedCount = 0;
   
@@ -107,21 +107,12 @@ function importSalesDataToTargetSheet() {
     const totalCost  = idxPrice !== -1 ? parseNumber(row[idxPrice]) : 0;
     const warehouse  = idxWh    !== -1 ? (String(row[idxWh] || '').trim() || 'DEFAULT_WH') : 'DEFAULT_WH';
     
-    // 🛡️ FIX: تبدیل تاریخ به رشته جلالی استاندارد برای نوشتن در شیت
-    let jalaliStr = '';
-    if (gregorianDate instanceof Date && !isNaN(gregorianDate.getTime())) {
-        jalaliStr = formatDateJalali(gregorianDate);
-    } else {
-        jalaliStr = String(jalaliDate);
-    }
-    
     if (IMPORT_SALES_CONFIG.TARGET_SHEET === 'SALES') {
-      outputRows.push([gregorianDate, jalaliStr, itemCode, parseNumber(qty), 'AUTO', warehouse, 0]);
+      outputRows.push([gregorianDate, jalaliDate, itemCode, parseNumber(qty), 'AUTO', warehouse, 0]);
     } else {
-      outputRows.push([gregorianDate, jalaliStr, itemCode, parseNumber(qty), unitName, totalCost, 'AUTO', '', warehouse, 0]);
+      outputRows.push([gregorianDate, jalaliDate, itemCode, parseNumber(qty), unitName, totalCost, 'AUTO', '', warehouse, 0]);
     }
   });
-  
   
   if (outputRows.length === 0) {
     ui.alert('⚠️ هیچ ردیف معتبری برای انتقال یافت نشد.');
@@ -376,14 +367,17 @@ function syncUnitsToSystem(ss, newUnits) {
 }
 
 /**
- * 🪩 منطق هوشمند ادغام شارژ قلیان بر اساس کد کالا
+ * 🪩 منطق هوشمند تجمیع کامل اقلام قلیان و شارژها (نسخه جدید)
+ * در هر فیش، تمام آیتم‌های قلیان (پایه و شارژ) فارغ از نوع کد، با هم جمع شده 
+ * و در قالب یک ردیف (اولین کد قلیان موجود در فیش) ثبت می‌شوند.
  */
 function applyHookahChargeLogic(rows, idxReceipt, idxCode, idxQty) {
   if (idxReceipt === -1) {
-    console.warn("⚠️ ستون 'شماره فیش' یافت نشد. منطق ادغام شارژ قلیان نادیده گرفته شد.");
+    console.warn("⚠️ ستون 'شماره فیش' یافت نشد. منطق تجمیع قلیان نادیده گرفته شد.");
     return rows;
   }
 
+  // گروه‌بندی ردیف‌ها بر اساس شماره فیش
   const receiptsMap = new Map();
   rows.forEach((row, index) => {
     const receiptId = String(row[idxReceipt] || '').trim();
@@ -395,34 +389,43 @@ function applyHookahChargeLogic(rows, idxReceipt, idxCode, idxQty) {
   const rowsToSkip = new Set(); 
 
   receiptsMap.forEach((itemsInReceipt) => {
-    let baseHookahRowIndex = -1;
-    let baseHookahTotalQty = 0;
-    let totalChargeQty = 0;
-    const chargeRowIndices = [];
+    let firstHookahRowIndex = -1;
+    let totalHookahQty = 0;
+    const hookahRowIndices = [];
 
+    // بررسی تمام آیتم‌های داخل یک فیش
     itemsInReceipt.forEach(item => {
       const itemCode = String(item.row[idxCode] || '').trim();
       const qty = parseNumber(item.row[idxQty]);
 
-      if (IMPORT_SALES_CONFIG.HOOKAH_CHARGE_CODES.has(itemCode)) {
-        totalChargeQty += qty;
-        chargeRowIndices.push(item.index);
-      } 
-      else if (IMPORT_SALES_CONFIG.HOOKAH_BASE_CODES.has(itemCode)) {
-        if (baseHookahRowIndex === -1) {
-          baseHookahRowIndex = item.index;
-          baseHookahTotalQty = qty;
-        } else {
-          baseHookahTotalQty += qty;
+      // 🔥 تغییر جدید: بررسی همزمان کدهای پایه و شارژ قلیان (تجمیع کامل فارغ از نوع)
+      if (IMPORT_SALES_CONFIG.HOOKAH_BASE_CODES.has(itemCode) || 
+          IMPORT_SALES_CONFIG.HOOKAH_CHARGE_CODES.has(itemCode)) {
+        
+        hookahRowIndices.push(item.index);
+        totalHookahQty += qty;
+
+        // اولین آیتم قلیان پیدا شده را به عنوان نماینده این فیش نگه می‌داریم
+        if (firstHookahRowIndex === -1) {
+          firstHookahRowIndex = item.index;
         }
       }
     });
 
-    if (baseHookahRowIndex !== -1 && totalChargeQty > 0) {
-      rows[baseHookahRowIndex][idxQty] = baseHookahTotalQty + totalChargeQty;
-      chargeRowIndices.forEach(idx => rowsToSkip.add(idx));
+    // اگر در این فیش حداقل یک آیتم قلیان یا شارژ وجود داشت
+    if (firstHookahRowIndex !== -1) {
+      // مقدار ردیف نماینده را برابر با کل مجموع قرار می‌دهیم (مثلاً ۵ تا قلیان)
+      rows[firstHookahRowIndex][idxQty] = totalHookahQty;
+      
+      // تمام ردیف‌های دیگر قلیان و شارژ در این فیش را برای حذف علامت‌گذاری می‌کنیم
+      hookahRowIndices.forEach(idx => {
+        if (idx !== firstHookahRowIndex) {
+          rowsToSkip.add(idx);
+        }
+      });
     }
   });
 
+  // فیلتر کردن ردیف‌های حذف شده و بازگرداندن لیست نهایی
   return rows.filter((row, index) => !rowsToSkip.has(index));
 }
