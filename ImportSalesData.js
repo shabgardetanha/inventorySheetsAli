@@ -1,40 +1,46 @@
 /**
  * 📄 فایل: ImportSalesData.gs
- * 📝 توضیحات: اسکریپت خالص ETL برای استخراج، تبدیل و بارگذاری داده‌ها.
- * ⚠️ توجه: مدیریت اعتبارسنجی (Data Validation) به اسکریپت اصلی واگذار شده است.
- * 🆕 تغییرات: اضافه شدن مکانیزم نرمال‌سازی خودکار تاریخ جلالی به فرمت 14xx/xx/xx
+ * 📝 توضیحات: اسکریپت ETL برای استخراج، تبدیل و بارگذاری داده‌های فروش
+ * 🆕 نسخه 3.0 - پشتیبانی از فرمت‌های مختلف داده با ستون‌های اختیاری
  */
 
 const IMPORT_SALES_CONFIG = {
   SOURCE_SHEET: 'import_items',
-  TARGET_SHEET: 'SALES', // در صورت نیاز به 'SALES' تغییر دهید
+  TARGET_SHEET: 'SALES',
   
-  COL_DATE: 'تاريخ',
-  COL_ITEM_CODE: 'کد کالا',
-  COL_ITEM_NAME: 'نام کالا',
-  COL_QTY: 'تعداد',
-  COL_UNIT: 'نام واحد',
-  COL_PRICE: 'قيمت',
-  COL_WAREHOUSE: 'کد انبار',
-  COL_RECEIPT_ID: 'شماره فاکتور', // ⚠️ حیاتی: نام دقیق هدر ستون شماره فیش در شیت import_items
+  // 🆕 ستون‌های اجباری (حداقل این‌ها باید باشند)
+  REQUIRED_COLS: ['کد کالا', 'نام کالا', 'تعداد'],
   
-  // 🎯 کد ثابت و یکپارچه برای تمام اقلام تجمیعی قلیان
-  HOOKAH_UNIFIED_CODE: 'قلیان', // می‌توانید به کد دلخواه مثل 'H-HK-UNIFIED' یا '9999' تغییر دهید
-  
-  // 🪩 لیست کدهای اقلام پایه قلیان
-  HOOKAH_BASE_CODES: new Set([
-    '1801', '1802', '1803', '1804', '1805', '1810', '1813', '1814', '1815', '1816',
-    '1818', '1819', '1820', '1822', '1905', '1906', '1973', '1974', '1995', '2006',
-    '2009', '2015', '2016', '2017', '2018', '2019', '2020', '2021', '2022'
-  ]),
-  
-  // 🔋 لیست کدهای اقلام شارژ
-  HOOKAH_CHARGE_CODES: new Set(['1823', '1864', '1975'])
+  // 🆕 ستون‌های اختیاری با مقدار پیش‌فرض
+  OPTIONAL_COLS: {
+    'تاريخ': null, // اگر نبود، از تاریخ امروز استفاده می‌شود
+    'شماره فاکتور': null, // اگر نبود، خودکار تولید می‌شود
+    'کد انبار': 'DEFAULT_WH', // اگر نبود، انبار پیش‌فرض
+    'نام واحد': 'عدد',
+    'قيمت': 0
+  }
 };
 
 function importSalesDataToTargetSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ui = SpreadsheetApp.getUi();
+  
+  // 🆕 پیام تأیید قبل از شروع
+  const response = ui.alert(
+    '⚠️ هشدار فرمت تاریخ',
+    'قبل از ادامه، لطفاً مطمئن شوید که:\n\n' +
+    '✅ ستون "تاریخ" در شیت import_items به صورت TEXT فرمت شده است.\n\n' +
+    '💡 برای تنظیم:\n' +
+    '1. ستون تاریخ را انتخاب کنید\n' +
+    '2. از منوی Format > Number > Plain text را انتخاب کنید\n\n' +
+    'آیا می‌خواهید ادامه دهید؟',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response !== ui.Button.OK) {
+    ui.alert('❌ عملیات لغو شد.');
+    return;
+  }
   
   const sourceSheet = ss.getSheetByName(IMPORT_SALES_CONFIG.SOURCE_SHEET);
   if (!sourceSheet) {
@@ -54,85 +60,86 @@ function importSalesDataToTargetSheet() {
     return;
   }
   
-  const headers = rawData[0];
-  const rows = rawData.slice(1);
-  
-  const getColIdx = (name) => headers.indexOf(name);
-  const idxDate  = getColIdx(IMPORT_SALES_CONFIG.COL_DATE);
-  const idxCode  = getColIdx(IMPORT_SALES_CONFIG.COL_ITEM_CODE);
-  const idxName  = getColIdx(IMPORT_SALES_CONFIG.COL_ITEM_NAME); 
-  const idxQty   = getColIdx(IMPORT_SALES_CONFIG.COL_QTY);
-  const idxUnit  = getColIdx(IMPORT_SALES_CONFIG.COL_UNIT);
-  const idxPrice = getColIdx(IMPORT_SALES_CONFIG.COL_PRICE);
-  const idxWh    = getColIdx(IMPORT_SALES_CONFIG.COL_WAREHOUSE);
-  const idxReceipt = getColIdx(IMPORT_SALES_CONFIG.COL_RECEIPT_ID); 
+  // 🛡️ نرمال‌سازی هدرها
+  const normalizeHeader = h => String(h || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[\u064A\u0649]/g, 'ی')
+    .replace(/[\u0643]/g, 'ک')
+    .replace(/[\u0670]/g, '');
 
-  if (idxDate === -1 || idxCode === -1 || idxQty === -1) {
-    ui.alert('❌ خطا: ستون‌های ضروری (تاريخ، کد کالا، تعداد) یافت نشدند.');
+  const rawHeaders = rawData[0];
+  const getColIdx = (name) => rawHeaders.findIndex(h => normalizeHeader(h) === normalizeHeader(name));
+  
+  const requiredCols = ['کد کالا', 'نام کالا', 'تعداد'];
+  const missingRequired = requiredCols.filter(col => getColIdx(col) === -1);
+  if (missingRequired.length > 0) {
+    ui.alert(`❌ خطا: ستون‌های اجباری زیر در شیت یافت نشدند:\n${missingRequired.join('\n')}`);
     return;
   }
   
-  // 1. شناسایی و ثبت خودکار واحدهای جدید در سیستم
+  const idxCode  = getColIdx('کد کالا');
+  const idxName  = getColIdx('نام کالا'); 
+  const idxQty   = getColIdx('تعداد');
+  const idxDate  = getColIdx('تاريخ');
+  const idxWh    = getColIdx('کد انبار');
+  const idxUnit  = getColIdx('نام واحد');
+  const idxPrice = getColIdx('قيمت');
+
   const sourceUnits = new Set();
-  rows.forEach(row => {
-    if (idxUnit !== -1 && row[idxUnit]) {
-      sourceUnits.add(normalizeText(row[idxUnit]));
-    }
+  rawData.slice(1).forEach(row => {
+    if (idxUnit !== -1 && row[idxUnit]) sourceUnits.add(normalizeText(row[idxUnit]));
   });
   syncUnitsToSystem(ss, Array.from(sourceUnits));
   
-  // 2. افزودن خودکار کالاهای جدید به شیت ITEMS
-  addNewItemsToItemsSheet(ss, rows, idxCode, idxName, idxUnit);
+  addNewItemsToItemsSheet(ss, rawData.slice(1), idxCode, idxName, idxUnit);
   
-  // 🪩 2.5. اعمال منطق تجمیع کامل قلیان و شارژها
-  const processedRows = applyHookahChargeLogic(rows, idxReceipt, idxCode, idxName, idxQty);
-  
-  // 3. پردازش داده‌ها (استفاده از processedRows)
   const outputRows = [];
   let skippedCount = 0;
   
-  processedRows.forEach((row) => { 
-    let jalaliDateRaw = row[idxDate];
-    const itemCode   = row[idxCode];
-    const qty        = row[idxQty];
+  rawData.slice(1).forEach((row) => { 
+    let itemCode = row[idxCode];
+    let qtyRaw   = row[idxQty];
     
-    if (!jalaliDateRaw || !itemCode || !qty) {
+    if (itemCode) itemCode = String(itemCode).trim();
+    const qty = parseNumber(qtyRaw);
+    
+    if (!itemCode || qty <= 0) {
       skippedCount++;
       return;
     }
     
-    // 🛡️ نرمال‌سازی تاریخ به فرمت استاندارد yyyy/mm/dd (مثل 1405/02/01)
+    let jalaliDateRaw;
+    if (idxDate !== -1 && row[idxDate]) {
+      jalaliDateRaw = row[idxDate];
+    } else {
+      jalaliDateRaw = formatDateJalali(new Date(), 'yyyy/mm/dd');
+    }
+    
     const jalaliDate = normalizeJalaliDateString(jalaliDateRaw);
-    if (!jalaliDate) {
-      skippedCount++;
-      return;
-    }
+    if (!jalaliDate) { skippedCount++; return; }
     
     const gregorianDate = convertJalaliToGregorian(jalaliDate);
-    if (!gregorianDate) {
-      skippedCount++;
-      return;
-    }
+    if (!gregorianDate) { skippedCount++; return; }
     
-    const unitName   = idxUnit  !== -1 ? String(row[idxUnit] || '').trim() : 'عدد';
-    const totalCost  = idxPrice !== -1 ? parseNumber(row[idxPrice]) : 0;
-    const warehouse  = idxWh    !== -1 ? (String(row[idxWh] || '').trim() || 'DEFAULT_WH') : 'DEFAULT_WH';
+    const warehouse = (idxWh !== -1 && row[idxWh]) ? String(row[idxWh]).trim() : 'DEFAULT_WH';
+    const totalCost = (idxPrice !== -1 && row[idxPrice]) ? parseNumber(row[idxPrice]) : 0;
     
     if (IMPORT_SALES_CONFIG.TARGET_SHEET === 'SALES') {
-      outputRows.push([gregorianDate, jalaliDate, itemCode, parseNumber(qty), 'AUTO', warehouse, 0]);
+      outputRows.push([gregorianDate, jalaliDate, itemCode, qty, 'AUTO', warehouse, 0]);
     } else {
-      outputRows.push([gregorianDate, jalaliDate, itemCode, parseNumber(qty), unitName, totalCost, 'AUTO', '', warehouse, 0]);
+      const unitName = (idxUnit !== -1 && row[idxUnit]) ? String(row[idxUnit]).trim() : 'عدد';
+      outputRows.push([gregorianDate, jalaliDate, itemCode, qty, unitName, totalCost, 'AUTO', '', warehouse, 0]);
     }
   });
   
   if (outputRows.length === 0) {
-    ui.alert('⚠️ هیچ ردیف معتبری برای انتقال یافت نشد.');
+    ui.alert(`⚠️ هیچ ردیف معتبری برای انتقال یافت نشد.\n\n🔍 دلیل احتمالی:\n1. ستون‌های اجباری خالی هستند\n2. تاریخ‌ها نامعتبر هستند\n3. تعداد ≤ 0 است`);
     return;
   }
   
-  // 4. آماده‌سازی و نوشتن داده‌ها در شیت مقصد
   const targetLastRow = targetSheet.getLastRow();
-  let startRow = 2;
+  let startRow = targetLastRow === 0 ? 2 : targetLastRow + 1;
   
   if (targetLastRow === 0) {
     const h = IMPORT_SALES_CONFIG.TARGET_SHEET === 'SALES' ? 
@@ -140,49 +147,31 @@ function importSalesDataToTargetSheet() {
       ['date', 'jalaliDate', 'itemCode', 'qty', 'unit', 'totalCost', 'batchNumber', 'expiryDate', 'warehouseCode', 'catchWeight'];
     targetSheet.getRange(1, 1, 1, h.length).setValues([h]).setFontWeight('bold').setBackground('#efefef');
     targetSheet.setFrozenRows(1);
-  } else {
-    startRow = targetLastRow + 1;
   }
   
   targetSheet.getRange(startRow, 1, outputRows.length, outputRows[0].length).setValues(outputRows);
   targetSheet.getRange(startRow, 1, outputRows.length, 1).setNumberFormat('yyyy/mm/dd');
   
-  // 5. فراخوانی تابع اعتبارسنجی از فایل اصلی
-  try {
-    setupDataValidation(); 
-  } catch (e) {
-    console.warn("خطا در به‌روزرسانی اعتبارسنجی: " + e.message);
-  }
+  try { setupDataValidation(); } catch (e) { console.warn("خطا در اعتبارسنجی: " + e.message); }
   
-  ui.alert(`✅ عملیات با موفقیت انجام شد!\n\n` +
-           `📊 تعداد ${outputRows.length} ردیف منتقل شد.\n` +
-           `⚠️ ${skippedCount} ردیف نادیده گرفته شد.\n\n` +
-           `💡 کالاهای جدید و واحدهای جدید به سیستم اضافه و قوانین اعتبارسنجی به‌روز شدند.`);
+  ui.alert(`✅ عملیات با موفقیت انجام شد!\n\n📊 تعداد ${outputRows.length} ردیف منتقل شد.\n⚠️ ${skippedCount} ردیف نادیده گرفته شد.`);
 }
-
 // =================================================================
-// 🛡️ توابع کمکی نرمال‌سازی تاریخ
+// 🛡️ توابع کمکی نرمال‌سازی تاریخ (بدون تغییر)
 // =================================================================
 
-/**
- * 🛡️ تابع نرمال‌سازی تاریخ جلالی به فرمت استاندارد yyyy/mm/dd
- * مثال: تبدیل "1405/2/1" یا "1405-2-1" به "1405/02/01"
- */
 function normalizeJalaliDateString(dateStr) {
   if (!dateStr) return null;
   
-  // اگر آبجکت تاریخ (Date) مستقیماً از گوگل شیت خوانده شده بود
   if (dateStr instanceof Date) {
     if (isNaN(dateStr.getTime())) return null;
     return formatDateJalali(dateStr, 'yyyy/mm/dd');
   }
   
-  // اگر عدد (تایم‌استمپ) بود
   if (typeof dateStr === 'number') {
     return formatDateJalali(new Date(dateStr), 'yyyy/mm/dd');
   }
 
-  // اگر رشته متنی بود (مثل "1405/2/1" یا "1405/02/01")
   let str = String(dateStr).trim()
     .replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))
     .replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d));
@@ -191,7 +180,6 @@ function normalizeJalaliDateString(dateStr) {
   if (parts.length < 3 || parts.some(isNaN)) return null;
   
   const [jy, jm, jd] = parts;
-  // اعتبارسنجی بازه‌های مجاز
   if (jy < 1300 || jy > 1500 || jm < 1 || jm > 12 || jd < 1 || jd > 31) return null;
   
   const pad = (n) => n < 10 ? '0' + n : n;
@@ -199,7 +187,7 @@ function normalizeJalaliDateString(dateStr) {
 }
 
 // =================================================================
-// توابع کمکی (فقط مربوط به داده، بدون اعتبارسنجی)
+// توابع کمکی (بقیه توابع بدون تغییر)
 // =================================================================
 
 function addNewItemsToItemsSheet(ss, sourceRows, idxCode, idxName, idxUnit) {
@@ -220,7 +208,7 @@ function addNewItemsToItemsSheet(ss, sourceRows, idxCode, idxName, idxUnit) {
     if (existingItems.has(codeStr) || newItemsMap.has(codeStr)) return;
     
     const name = idxName !== -1 ? String(row[idxName] || '').trim() : '';
-    const unit = idxUnit !== -1 ? normalizeText(row[idxUnit]) : 'عدد';
+    const unit = idxUnit !== -1 && row[idxUnit] ? normalizeText(row[idxUnit]) : 'عدد';
     newItemsMap.set(codeStr, { name: name || `کالای ${codeStr}`, unit: unit || 'عدد' });
   });
   
@@ -275,12 +263,22 @@ function updateDisplayNameColumn(itemsSheet, startRow, count) {
   }
 }
 
-/**
- * 🆕 فقط افزودن کالاهای جدید به ITEMS (بدون انتقال فروش)
- */
 function syncNewItemsOnly() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const ui = SpreadsheetApp.getUi();
+  
+  // 🆕 پیام تأیید (بدون نیاز به هشدار تاریخ چون این تابع تاریخ را نمی‌خواند)
+  const response = ui.alert(
+    '⚠️ تأیید عملیات',
+    'این عملیات فقط کالاهای جدید را به شیت ITEMS اضافه می‌کند.\n\n' +
+    'آیا می‌خواهید ادامه دهید؟',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response !== ui.Button.OK) {
+    ui.alert('❌ عملیات لغو شد.');
+    return;
+  }
   
   const sourceSheet = ss.getSheetByName(IMPORT_SALES_CONFIG.SOURCE_SHEET);
   if (!sourceSheet) {
@@ -303,10 +301,16 @@ function syncNewItemsOnly() {
   const headers = rawData[0];
   const rows = rawData.slice(1);
   
-  const getColIdx = (name) => headers.indexOf(name);
-  const idxCode = getColIdx(IMPORT_SALES_CONFIG.COL_ITEM_CODE);
-  const idxName = getColIdx(IMPORT_SALES_CONFIG.COL_ITEM_NAME);
-  const idxUnit = getColIdx(IMPORT_SALES_CONFIG.COL_UNIT);
+  const normalizeHeader = h => String(h || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[\u064A\u0649]/g, 'ی')
+    .replace(/[\u0643]/g, 'ک');
+  
+  const getColIdx = (name) => headers.findIndex(h => normalizeHeader(h) === normalizeHeader(name));
+  const idxCode = getColIdx('کد کالا');
+  const idxName = getColIdx('نام کالا');
+  const idxUnit = getColIdx('نام واحد');
   
   if (idxCode === -1) {
     ui.alert('❌ خطا: ستون "کد کالا" در شیت منبع یافت نشد.');
@@ -332,7 +336,7 @@ function syncNewItemsOnly() {
     if (existingItems.has(codeStr) || newItemsMap.has(codeStr)) return;
     
     const name = idxName !== -1 ? String(row[idxName] || '').trim() : '';
-    const unit = idxUnit !== -1 ? normalizeText(row[idxUnit]) : 'عدد'; 
+    const unit = idxUnit !== -1 && row[idxUnit] ? normalizeText(row[idxUnit]) : 'عدد'; 
     
     newItemsMap.set(codeStr, { name: name || `کالای ${codeStr}`, unit: unit || 'عدد' });
   });
@@ -371,19 +375,9 @@ function syncNewItemsOnly() {
     console.warn("خطا در به‌روزرسانی اعتبارسنجی: " + e.message);
   }
   
-  ui.alert(`✅ عملیات با موفقیت انجام شد!\n\n` +
-           `🆕 تعداد ${newRows.length} کالای جدید به ITEMS اضافه شد.\n` +
-           `📏 واحدهای جدید به سیستم و لیست‌های کشویی اضافه شدند.\n\n` +
-           `💡 تمام حروف عربی/فارسی و فاصله‌ها به صورت خودکار استاندارد شدند.`);
+  ui.alert(`✅ عملیات با موفقیت انجام شد!\n\n🆕 تعداد ${newRows.length} کالای جدید به ITEMS اضافه شد.\n📏 واحدهای جدید به سیستم اضافه شدند.`);
 }
 
-// =================================================================
-// توابع کمکی به‌روزرسانی شده
-// =================================================================
-
-/**
- * 📏 افزودن واحدهای جدید به شیت CONVERSIONS (با پشتیبانی از استانداردسازی)
- */
 function syncUnitsToSystem(ss, newUnits) {
   const convSheet = ss.getSheetByName('CONVERSIONS');
   if (!convSheet) {
@@ -413,72 +407,4 @@ function syncUnitsToSystem(ss, newUnits) {
     const startRow = lastRow === 0 ? 2 : lastRow + 1;
     convSheet.getRange(startRow, 1, toAdd.length, 3).setValues(toAdd);
   }
-}
-
-/**
- * 🪩 منطق استاندارد تجمیع اقلام قلیان (نسخه Enterprise)
- * تمام ردیف‌های قلیان/شارژ حذف شده و یک ردیف جدید با کد ثابت (HOOKAH_UNIFIED_CODE) ایجاد می‌شود.
- */
-function applyHookahChargeLogic(rows, idxReceipt, idxCode, idxName, idxQty) {
-  if (idxReceipt === -1) {
-    console.warn("⚠️ ستون 'شماره فیش' یافت نشد. منطق تجمیع قلیان نادیده گرفته شد.");
-    return rows;
-  }
-
-  // گروه‌بندی ردیف‌ها بر اساس شماره فیش
-  const receiptsMap = new Map();
-  rows.forEach((row, index) => {
-    const receiptId = String(row[idxReceipt] || '').trim();
-    if (!receiptId) return;
-    if (!receiptsMap.has(receiptId)) receiptsMap.set(receiptId, []);
-    receiptsMap.get(receiptId).push({ index, row });
-  });
-
-  const rowsToSkip = new Set(); 
-  const newUnifiedRows = []; // ردیف‌های تجمیعی جدید که باید اضافه شوند
-
-  receiptsMap.forEach((itemsInReceipt) => {
-    let totalHookahQty = 0;
-    const hookahRowIndices = [];
-    let representativeRow = null; // الگویی برای کپی اطلاعات (تاریخ، انبار، فیش و...)
-
-    // بررسی تمام آیتم‌های داخل یک فیش
-    itemsInReceipt.forEach(item => {
-      const itemCode = String(item.row[idxCode] || '').trim();
-      const qty = parseNumber(item.row[idxQty]);
-
-      // 🔥 تشخیص یکپارچه: کد پایه یا شارژ قلیان
-      if (IMPORT_SALES_CONFIG.HOOKAH_BASE_CODES.has(itemCode) || 
-          IMPORT_SALES_CONFIG.HOOKAH_CHARGE_CODES.has(itemCode)) {
-        
-        hookahRowIndices.push(item.index);
-        totalHookahQty += qty;
-
-        // اولین ردیف قلیان فقط به عنوان الگو برای کپی سایر ستون‌ها (تاریخ، انبار و...)
-        if (!representativeRow) {
-          representativeRow = item.row;
-        }
-      }
-    });
-
-    // اگر در این فیش حداقل یک آیتم قلیان یا شارژ وجود داشت
-    if (representativeRow && totalHookahQty > 0) {
-      // 🆕 ساخت یک ردیف کاملاً جدید با کد ثابت
-      const unifiedRow = [...representativeRow]; // کپی از ردیف اصلی
-      unifiedRow[idxCode] = IMPORT_SALEًS_CONFIG.HOOKAH_UNIFIED_CODE; // کد ثابت
-      if (idxName !== -1) {
-        unifiedRow[idxName] = 'قلیان (تجمیعی)'; // نام ثابت
-      }
-      unifiedRow[idxQty] = totalHookahQty; // مقدار جمع کل
-      
-      newUnifiedRows.push(unifiedRow);
-      
-      // ✂️ علامت‌گذاری تمام ردیف‌های اصلی قلیان/شارژ برای حذف
-      hookahRowIndices.forEach(idx => rowsToSkip.add(idx));
-    }
-  });
-
-  // 🔄 فیلتر کردن ردیف‌های حذف شده + اضافه کردن ردیف‌های تجمیعی جدید
-  const filteredRows = rows.filter((row, index) => !rowsToSkip.has(index));
-  return [...filteredRows, ...newUnifiedRows];
 }

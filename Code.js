@@ -5,7 +5,7 @@
  */
 
 const CONFIG = {
-  VERSION: "Enterprise-8.0",
+  VERSION: "Enterprise-8.1",
   TOLERANCE: 1e-6,
   ROUND_QTY: 4,
   ROUND_MONEY: 2,
@@ -19,7 +19,7 @@ const CONFIG = {
   },
   TXN_ORDER: { 
     'OPENING': 0, 'PURCHASE': 1, 'PRODUCTION_CONSUME': 2, 'PRODUCTION_ADD': 3,     
-    'STOCK_ADJUST': 4, 'WASTE': 5, 'SALE': 6 
+    'STOCK_ADJUST': 4, 'WASTE': 5, 'SALE': 6, 'SALE_BACKFLUSH': 7
   },
   ITEM_TYPES: { RAW: 'RAW', PACKAGED: 'PACKAGED', PRODUCT: 'PRODUCT' }
 };
@@ -101,15 +101,15 @@ function normalizeText(text) {
    1. UI & INITIALIZATION
    ========================================== */
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu('💎 سیستم جامع مالی ۸.۰ (Enterprise SAP/Oracle)')
+  SpreadsheetApp.getUi().createMenu('💎 سیستم جامع مالی ۸.۱ (Enterprise SAP/Oracle)')
     .addItem('🚀 اجرای کامل محاسبات روزانه (FEFO & Multi-WH)', 'runFinancialEngine')
     .addItem('⚙️ به‌روزرسانی کش فرمول ساخت (BOM)', 'updateBOMCache')
     .addItem('📦 تولید خودکار فرمول بسته‌بندی', 'generatePackagingBOM')
     .addItem('🔄 اعمال لیست‌های کشویی هوشمند (Data Validation)', 'setupDataValidation')
     .addItem('📖 ایجاد راهنمای کدگذاری (Coding Guide)', 'createCodingGuideSheet')
+    .addItem('🔃 به‌روزرسانی تمام DisplayNames', 'refreshAllDisplayNames') // 🆕 اضافه شد
     .addSeparator()
     
-    // 📥 زیرمنوی وارد کردن داده‌های خارجی
     .addSubMenu(SpreadsheetApp.getUi().createMenu('📥 وارد کردن داده‌های خارجی')
       .addItem('🧾 انتقال فروش + افزودن کالاهای جدید', 'importSalesDataToTargetSheet')
       .addItem('🆕 فقط افزودن کالاهای جدید به ITEMS (بدون انتقال)', 'syncNewItemsOnly')
@@ -163,11 +163,69 @@ function setupEnvironment() {
 /* ==========================================
    2. MAIN ORCHESTRATOR
    ========================================== */
+/**
+ * 🔧 اصلاح تاریخ‌های خالی قبل از بارگذاری داده‌ها
+ */
+function fixEmptyDatesBeforeLoad(ss) {
+  const targetSheets = [
+    CONFIG.SHEETS.PURCHASES,
+    CONFIG.SHEETS.PRODUCTION,
+    CONFIG.SHEETS.SALES,
+    CONFIG.SHEETS.WASTE,
+    CONFIG.SHEETS.STOCK
+  ];
+  
+  targetSheets.forEach(sheetName => {
+    const sheet = ss.getSheetByName(sheetName);
+    if (!sheet || sheet.getLastRow() < 2) return;
+    
+    const lastRow = sheet.getLastRow();
+    const lastCol = sheet.getLastColumn();
+    const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    
+    const normHeader = h => String(h||'').replace(/\s+/g,'').replace(/[_\-\u200c]/g,'').toLowerCase();
+    const dateIdx = headers.findIndex(h => normHeader(h) === 'date');
+    const jalaliIdx = headers.findIndex(h => normHeader(h) === 'jalalidate');
+    
+    if (dateIdx === -1 || jalaliIdx === -1) return;
+    
+    // 🆕 جمع‌آوری تمام سلول‌هایی که نیاز به اصلاح دارند
+    const updates = [];
+    
+    for (let i = 2; i <= lastRow; i++) {
+      const dateVal = sheet.getRange(i, dateIdx + 1).getValue();
+      const jalaliVal = sheet.getRange(i, jalaliIdx + 1).getValue();
+      
+      // اگر date خالی است ولی jalaliDate پر است
+      if ((!dateVal || String(dateVal).trim() === '') && jalaliVal) {
+        const jalaliStr = String(jalaliVal).trim();
+        const gregorianDate = convertJalaliToGregorian(jalaliStr);
+        
+        if (gregorianDate) {
+          updates.push({ row: i, col: dateIdx + 1, value: gregorianDate });
+        }
+      }
+    }
+    
+    // 🆕 نوشتن یکجا (سریع‌تر)
+    if (updates.length > 0) {
+      updates.forEach(u => {
+        sheet.getRange(u.row, u.col).setValue(u.value).setNumberFormat('yyyy/mm/dd');
+      });
+    }
+  });
+}
+
+
+
 function runFinancialEngine() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const errorLog = [], suspenseLog = [];
   try {
-    // 🆕 بارگذاری کامل تمام داده‌ها شامل CONVERSIONS و RECIPES
+    // 🆕 مرحله ۱: اصلاح تاریخ‌های خالی قبل از بارگذاری
+    fixEmptyDatesBeforeLoad(ss);
+    
+    // مرحله ۲: بارگذاری کامل تمام داده‌ها
     const rawData = loadAllData(ss, errorLog);
     
     if (errorLog.length > 0) {
@@ -176,9 +234,8 @@ function runFinancialEngine() {
     
     const itemsMap = buildItemsMap(rawData.ITEMS, errorLog);
     
-    // 🆕 بررسی وجود CONVERSIONS قبل از استفاده
     if (!rawData.CONVERSIONS || rawData.CONVERSIONS.length === 0) {
-      errorLog.push('[هشدار] شیت CONVERSIONS خالی است یا وجود ندارد. تبدیل واحدها غیرفعال خواهد بود.');
+      errorLog.push('[هشدار] شیت CONVERSIONS خالی است یا وجود ندارد.');
     }
     const convGraph = buildConversionGraph(rawData.CONVERSIONS || []);
     
@@ -192,16 +249,13 @@ function runFinancialEngine() {
     const ledger = buildUnifiedLedger(rawData, cachedBOM, itemsMap, convGraph, errorLog); 
     const { inventory, dailyMetrics } = processLedgerAndAudit(ledger, itemsMap, convGraph, suspenseLog, errorLog);
     
-    // 🆕 ارسال errorLog و suspenseLog به flushReports
     flushReports(ss, inventory, dailyMetrics, suspenseLog, errorLog, itemsMap);
     
     SpreadsheetApp.getUi().alert(`✅ محاسبات مالی (نسخه ${CONFIG.VERSION}) با موفقیت انجام شد.\nتاریخ هدف: ${dailyMetrics.targetDate}`);
   } catch (e) {
-    // 🆕 ارسال errorLog به logCriticalError برای ثبت کامل
     logCriticalError(ss, e, errorLog);
   }
 }
-
 
 /* ==========================================
    3. BOM & PACKAGING (حفظ شده از نسخه ۷.۳)
@@ -222,15 +276,25 @@ function updateBOMCache() {
     
     const cacheSh = getOrCreateSheet(ss, CONFIG.SHEETS.BOM_CACHE);
     cacheSh.clear();
-    cacheSh.appendRow(['menuCode', 'ingCode', 'qtyNeeded']).setFontWeight('bold');
+    
+    // 🆕 اصلاح: نوشتن هدر به صورت جداگانه
+    cacheSh.getRange(1, 1, 1, 3).setValues([['menuCode', 'ingCode', 'qtyNeeded']]).setFontWeight('bold');
+    cacheSh.setFrozenRows(1);
+    
     const output = [];
     Object.keys(flatBOM.map).forEach(menu => {
       const ings = flatBOM.map[menu];
       Object.keys(ings).forEach(ing => output.push([menu, ing, ings[ing]]));
     });
-    if(output.length) cacheSh.getRange(2, 1, output.length, 3).setValues(output);
-    SpreadsheetApp.getUi().alert('✅ فرمول‌های ساخت با موفقیت پردازش و کش شدند.');
-  } catch(e) { logCriticalError(ss, e); }
+    
+    if(output.length) {
+      cacheSh.getRange(2, 1, output.length, 3).setValues(output);
+    }
+    
+    SpreadsheetApp.getUi().alert(`✅ فرمول‌های ساخت با موفقیت پردازش و کش شدند.\n📊 تعداد ${output.length} قلم در کش BOM ثبت شد.`);
+  } catch(e) { 
+    logCriticalError(ss, e, errorLog); 
+  }
 }
 
 function loadCachedBOM(ss) {
@@ -464,19 +528,46 @@ function buildUnifiedLedger(data, cachedBOM, itemsMap, convGraph, errorLog) {
   let prodCounter = 0;
   
   const validate = (r, t) => {
-    const d = parseDateStrict(r.date);
-    if (!d && t !== 'OPENING') return null; 
-    return { 
-        date: d || 0, _row: r._sourceRow, type: t, 
-        itemCode: String(r.itemCode||r.menuCode), 
-        qty: parseNumber(r.qty||r.qtyProduced),
-        unit: String(r.unit || '').trim(),
-        batchNumber: String(r.batchNumber || 'AUTO').trim(),
-        expiryDate: r.expiryDate ? parseDateStrict(r.expiryDate) : null,
-        warehouseCode: String(r.warehouseCode || 'DEFAULT_WH').trim(),
-        catchWeight: parseNumber(r.catchWeight)
-    };
+  let d = parseDateStrict(r.date);
+  
+  // 🆕 اگر date خالی بود ولی jalaliDate پر است، خودکار تبدیل کن
+  if (!d && r.jalaliDate) {
+    const jalaliStr = String(r.jalaliDate).trim();
+    const converted = convertJalaliToGregorian(jalaliStr);
+    if (converted) {
+      d = parseDateStrict(converted);
+      // 🆕 ستون date در شیت را هم به‌روز کن (اختیاری)
+      if (r._sheetName && r._sourceRow) {
+        try {
+          const sheet = SpreadsheetApp.getActive().getSheetByName(r._sheetName);
+          if (sheet) {
+            const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+            const dateIdx = headers.findIndex(h => String(h||'').toLowerCase() === 'date');
+            if (dateIdx !== -1) {
+              sheet.getRange(r._sourceRow, dateIdx + 1).setValue(converted).setNumberFormat('yyyy/mm/dd');
+            }
+          }
+        } catch(e) { /* نادیده بگیر */ }
+      }
+    }
+  }
+  
+  if (!d && t !== 'OPENING') return null;
+  
+  return { 
+    date: d || 0, 
+    _row: r._sourceRow, 
+    _sheetName: r._sheetName, // 🆕 اضافه شد
+    type: t, 
+    itemCode: String(r.itemCode||r.menuCode), 
+    qty: parseNumber(r.qty||r.qtyProduced),
+    unit: String(r.unit || '').trim(),
+    batchNumber: String(r.batchNumber || 'AUTO').trim(),
+    expiryDate: r.expiryDate ? parseDateStrict(r.expiryDate) : null,
+    warehouseCode: String(r.warehouseCode || 'DEFAULT_WH').trim(),
+    catchWeight: parseNumber(r.catchWeight)
   };
+};
 
   const convertToBase = (txn, originalUnit) => {
     const itemBaseUnit = itemsMap[txn.itemCode] ? itemsMap[txn.itemCode].baseUnit : '';
@@ -538,7 +629,42 @@ function buildUnifiedLedger(data, cachedBOM, itemsMap, convGraph, errorLog) {
     const b = validate(s, 'SALE'); 
     if(b) {
       b.qty = convertToBase(b, s.unit);
-      ledger.push(b);
+      
+      const item = itemsMap[b.itemCode];
+      let isBackflushed = false;
+      
+      // 🆕 سناریو B: اگر کالا PACKAGED/PRODUCT است و BOM دارد
+      if (item && (item.itemType === 'PACKAGED' || item.itemType === 'PRODUCT')) {
+        const comps = cachedBOM[b.itemCode];
+        if (comps && Object.keys(comps).length > 0) {
+          isBackflushed = true;
+          b.isBackflushed = true;
+          
+          // انفجار BOM و کسر مواد اولیه
+          for (let i in comps) {
+            ledger.push({ 
+              date: b.date, 
+              _row: b._row, 
+              type: 'PRODUCTION_CONSUME', 
+              itemCode: i, 
+              qty: comps[i] * b.qty, 
+              productionId: 'BACKFLUSH_SALE_' + b._row,
+              batchNumber: 'AUTO',
+              warehouseCode: b.warehouseCode, 
+              catchWeight: 0
+            });
+          }
+        }
+      }
+      
+      // اگر Backflush نبود، به روش عادی کسر شود
+      if (!isBackflushed) {
+        ledger.push(b);
+      } else {
+        // اگر Backflush بود، خود کالا کسر نمی‌شود
+        b.type = 'SALE_BACKFLUSH';
+        ledger.push(b);
+      }
     }
   });
 
@@ -568,10 +694,9 @@ function buildUnifiedLedger(data, cachedBOM, itemsMap, convGraph, errorLog) {
 }
 
 /* ==========================================
-   6. WAC ENGINE & FEFO LOGIC (موتور حیاتی نسخه ۸)
+   6. WAC ENGINE & FEFO LOGIC
    ========================================== */
 function processLedgerAndAudit(ledger, itemsMap, convGraph, suspenseLog, errorLog) {
-  // ساختار سه بعدی موجودی: inv[warehouse][itemCode][batch]
   const inv = {}; 
   
   const getBatch = (wh, item, batch) => {
@@ -642,14 +767,12 @@ function processLedgerAndAudit(ledger, itemsMap, convGraph, suspenseLog, errorLo
       
       let batches = Object.keys(inv[wh]?.[item] || {}).map(b => ({ id: b, data: inv[wh][item][b] }));
       
-      // اگر بچ خاصی مشخص شده باشد، فقط از همان بچ کسر می‌شود
       if (batch && batch !== 'AUTO' && batch !== 'NO_BATCH') {
         batches = batches.filter(b => b.id === batch);
       } else {
-        // الگوریتم FEFO: مرتب‌سازی بر اساس تاریخ انقضا (قدیمی‌ترین در اولویت)
         batches.sort((a, b) => {
           if (!a.data.expiryDate && !b.data.expiryDate) return 0;
-          if (!a.data.expiryDate) return 1; // بدون انقضا به آخر لیست می‌رود
+          if (!a.data.expiryDate) return 1;
           if (!b.data.expiryDate) return -1;
           return a.data.expiryDate - b.data.expiryDate;
         });
@@ -661,7 +784,6 @@ function processLedgerAndAudit(ledger, itemsMap, convGraph, suspenseLog, errorLo
         let consumeQty = Math.min(e.qty, remainingQty);
         let cost = consumeQty * e.wac;
         
-        // کسر وزن متغیر به صورت تناسبی
         let consumeCatchWeight = 0;
         if (e.catchWeight > 0 && e.qty > 0) {
            let ratio = consumeQty / e.qty;
@@ -692,6 +814,14 @@ function processLedgerAndAudit(ledger, itemsMap, convGraph, suspenseLog, errorLo
         checkSuspense({qty: 0}, {qty: remainingQty, type: txn.type}, suspenseLog, txn);
       }
     }
+    // 🆕 مدیریت فروش‌های Backflush
+    else if (txn.type === 'SALE_BACKFLUSH') {
+      // 🔒 خود کالا از انبار کسر نمی‌شود
+      // 🔒 هزینه در COGS ثبت نمی‌شود
+      if (isTargetDate) {
+         // فقط برای گزارش‌گیری (اختیاری)
+      }
+    }
     else if (txn.type === 'PRODUCTION_ADD') {
       const e = getBatch(wh, item, batch);
       e.qty += txn.qty; 
@@ -702,24 +832,53 @@ function processLedgerAndAudit(ledger, itemsMap, convGraph, suspenseLog, errorLo
       e.val += consumedCost;
       if (e.qty > CONFIG.TOLERANCE) e.wac = e.val / e.qty;
     }
-    else if (txn.type === 'STOCK_ADJUST') {
-      const e = getBatch(wh, item, batch);
-      const currentQty = e.qty;
-      const countedQty = txn.countedQty;
-      const variance = countedQty - currentQty;
-      
-      if (variance > CONFIG.TOLERANCE) {
-          e.qty += variance;
-          e.val += variance * e.wac;
-          if (e.qty > CONFIG.TOLERANCE) e.wac = e.val / e.qty;
-      } else if (variance < -CONFIG.TOLERANCE) {
-          const absVariance = Math.abs(variance);
-          const cost = absVariance * e.wac;
-          e.qty -= absVariance; 
-          e.val -= cost;
-          checkSuspense(e, {qty: absVariance, type: 'STOCK_SHORTAGE'}, suspenseLog, txn);
+    // در تابع processLedgerAndAudit، بخش STOCK_ADJUST:
+else if (txn.type === 'STOCK_ADJUST') {
+  // 🆕 اگر batchNumber = 'ALL'، اختلاف را روی کل کد کالا اعمال کن
+  if (batch === 'ALL' || batch === 'AUTO') {
+    // جمع کل موجودی تمام بچ‌های این کالا
+    let totalCurrentQty = 0;
+    let totalBatches = [];
+    
+    if (inv[wh]?.[item]) {
+      for (let b in inv[wh][item]) {
+        totalCurrentQty += inv[wh][item][b].qty;
+        totalBatches.push(inv[wh][item][b]);
       }
     }
+    
+    const variance = txn.countedQty - totalCurrentQty;
+    
+    if (Math.abs(variance) > CONFIG.TOLERANCE) {
+      // اختلاف را به نسبت موجودی هر بچ تقسیم کن
+      totalBatches.forEach(b => {
+        const ratio = b.qty / totalCurrentQty;
+        const batchVariance = variance * ratio;
+        b.qty += batchVariance;
+        b.val += batchVariance * b.wac;
+        if (b.qty > CONFIG.TOLERANCE) b.wac = b.val / b.qty;
+      });
+    }
+  } else {
+    // کد قبلی برای batchNumber مشخص
+    const e = getBatch(wh, item, batch);
+    const currentQty = e.qty;
+    const countedQty = txn.countedQty;
+    const variance = countedQty - currentQty;
+    
+    if (variance > CONFIG.TOLERANCE) {
+      e.qty += variance;
+      e.val += variance * e.wac;
+      if (e.qty > CONFIG.TOLERANCE) e.wac = e.val / e.qty;
+    } else if (variance < -CONFIG.TOLERANCE) {
+      const absVariance = Math.abs(variance);
+      const cost = absVariance * e.wac;
+      e.qty -= absVariance; 
+      e.val -= cost;
+      checkSuspense(e, {qty: absVariance, type: 'STOCK_SHORTAGE'}, suspenseLog, txn);
+    }
+  }
+}
     
     if (inv[wh]?.[item]?.[batch]) {
         let e = inv[wh][item][batch];
@@ -757,23 +916,39 @@ function checkSuspense(entry, txn, suspenseLog, originalTxn) {
    7. REPORTS EXPORTER (خروجی سه بعدی)
    ========================================== */
 function flushReports(ss, inv, metrics, suspenseLog, errorLog, itemsMap) {
+  // ═══════════════════════════════════════════════════════════
+  // بخش ۱: گزارش موجودی نهایی (INVENTORY_FINAL)
+  // ═══════════════════════════════════════════════════════════
   const rSh = getOrCreateSheet(ss, CONFIG.SHEETS.REPORT_INV);
   rSh.clear();
   const h = ['انبار', 'کد کالا', 'نام کالا', 'شماره بچ', 'تاریخ انقضا', 'واحد', 'موجودی', 'وزن متغیر', 'WAC', 'ارزش دفتری'];
   rSh.getRange(1, 1, 1, h.length).setValues([h]).setFontWeight('bold');
   
   const rows = [];
+  let zeroCount = 0;
+  let negativeCount = 0;
+  
   for (let wh in inv) {
     for (let item in inv[wh]) {
       for (let batch in inv[wh][item]) {
         let e = inv[wh][item][batch];
-        if (Math.abs(e.qty) < CONFIG.TOLERANCE && Math.abs(e.val) < CONFIG.TOLERANCE) continue;
+        
+        if (e.qty < -CONFIG.TOLERANCE) {
+          negativeCount++;
+        } else if (Math.abs(e.qty) < CONFIG.TOLERANCE) {
+          zeroCount++;
+        }
         
         let expiryStr = 'بدون انقضا';
         if (e.expiryDate) expiryStr = formatDateJalali(new Date(e.expiryDate));
         
         rows.push([
-          wh, item, e.name, batch, expiryStr, e.unit,
+          wh, 
+          item, 
+          e.name, 
+          batch, 
+          expiryStr, 
+          e.unit,
           Number(e.qty.toFixed(CONFIG.ROUND_QTY)), 
           Number(e.catchWeight.toFixed(CONFIG.ROUND_QTY)),
           Number(e.wac.toFixed(CONFIG.ROUND_MONEY)), 
@@ -782,24 +957,39 @@ function flushReports(ss, inv, metrics, suspenseLog, errorLog, itemsMap) {
       }
     }
   }
-  if (rows.length) rSh.getRange(2, 1, rows.length, h.length).setValues(rows);
+  
+  if (rows.length > 0) {
+    rSh.getRange(2, 1, rows.length, h.length).setValues(rows);
+    
+    for (let i = 0; i < rows.length; i++) {
+      const qty = rows[i][6];
+      const range = rSh.getRange(i + 2, 1, 1, h.length);
+      
+      if (qty < -CONFIG.TOLERANCE) {
+        range.setBackground('#ffcccc');
+      } else if (Math.abs(qty) < CONFIG.TOLERANCE) {
+        range.setBackground('#fff2cc');
+      }
+    }
+  }
 
+  // ═══════════════════════════════════════════════════════════
+  // بخش ۲: گزارش مغایرت موقت (SUSPENSE_ACCOUNT)
+  // ═══════════════════════════════════════════════════════════
   const sSh = getOrCreateSheet(ss, CONFIG.SHEETS.SUSPENSE);
   sSh.clear();
   const sHead = ['تاریخ جلالی', 'کد کالا', 'کسری موجودی موقت', 'نوع عملیات', 'ردیف منبع'];
   sSh.getRange(1, 1, 1, sHead.length).setValues([sHead]).setBackground('#ffeb3b');
   if(suspenseLog.length) sSh.getRange(2, 1, suspenseLog.length, sHead.length).setValues(suspenseLog);
 
-  const dSh = getOrCreateSheet(ss, CONFIG.SHEETS.REPORT_DAILY);
-  dSh.clear();
-  const dHead = ['تاریخ جلالی', 'خرید روز', 'بهای تمام شده فروش (COGS)', 'هزینه تولید روز', 'ارزش ضایعات'];
-  dSh.getRange(1, 1, 1, dHead.length).setValues([dHead]).setFontWeight('bold').setBackground('#e0f7fa');
-  dSh.getRange(2, 1, 1, dHead.length).setValues([[
-      metrics.targetDate, Number(metrics.purchases.toFixed(CONFIG.ROUND_MONEY)), 
-      Number(metrics.estCogs.toFixed(CONFIG.ROUND_MONEY)), Number(metrics.prodCost.toFixed(CONFIG.ROUND_MONEY)),
-      Number(metrics.wasteVal.toFixed(CONFIG.ROUND_MONEY))
-  ]]);
+  // ═══════════════════════════════════════════════════════════
+  // بخش ۳: داشبورد روزانه جامع (فراخوانی از فایل جداگانه)
+  // ═══════════════════════════════════════════════════════════
+  generateDailyDashboard(ss, inv, metrics, suspenseLog, itemsMap);
 
+  // ═══════════════════════════════════════════════════════════
+  // بخش ۴: گزارش خطاها (ERRORS_LOG)
+  // ═══════════════════════════════════════════════════════════
   const eSh = getOrCreateSheet(ss, CONFIG.SHEETS.ERRORS);
   eSh.clear();
   eSh.getRange(1, 1, 1, 1).setValues([['لاگ خطاها و هشدارها']]).setFontWeight('bold');
@@ -807,8 +997,22 @@ function flushReports(ss, inv, metrics, suspenseLog, errorLog, itemsMap) {
       const uniqueErrors = [...new Set(errorLog)].map(e => [e]);
       eSh.getRange(2, 1, uniqueErrors.length, 1).setValues(uniqueErrors);
   }
+  
+  // ═══════════════════════════════════════════════════════════
+  // پیام نهایی
+  // ═══════════════════════════════════════════════════════════
+  const ui = SpreadsheetApp.getUi();
+  ui.alert(
+    `✅ گزارش‌ها با موفقیت ایجاد شدند!\n\n` +
+    `📊 INVENTORY_FINAL: ${rows.length} ردیف\n` +
+    `⚠️ SUSPENSE_ACCOUNT: ${suspenseLog.length} ردیف\n` +
+    `📋 DAILY_DASHBOARD: داشبورد جامع روزانه\n\n` +
+    `💡 وضعیت موجودی:\n` +
+    `✅ مثبت: ${rows.length - zeroCount - negativeCount}\n` +
+    `⚠️ صفر: ${zeroCount}\n` +
+    `❌ منفی: ${negativeCount}`
+  );
 }
-
 // ─────────────────────────────────────────────
 // 🆕 ثبت خطای بحرانی (اصلاح‌شده - حفظ errorLog)
 // ─────────────────────────────────────────────
@@ -862,9 +1066,7 @@ function setupDataValidation() {
 
   const normHeader = h => String(h||'').replace(/\s+/g,'').replace(/[_\-\u200c]/g,'').toLowerCase();
 
-  // ─────────────────────────────────────────────
-  // 🆕 مرحله ۱: شیت کمکی برای لیست‌های کشویی
-  // ─────────────────────────────────────────────
+  // شیت کمکی
   const helperSheet = getOrCreateSheet(ss, '_DV_LISTS');
   helperSheet.clear();
   helperSheet.hideSheet();
@@ -889,48 +1091,49 @@ function setupDataValidation() {
     return Array.from(values);
   };
 
-  // ─────────────────────────────────────────────
-  // مرحله ۲: جمع‌آوری و نوشتن لیست‌ها در شیت کمکی
-  // ─────────────────────────────────────────────
-  
-  // 2.1 واحدها
+  // واحدها
   let units = getUniqueValues(['CONVERSIONS'], 'fromUnit');
   let unitsTo = getUniqueValues(['CONVERSIONS'], 'toUnit');
   const normalizedUnits = [...units, ...unitsTo].map(u => normalizeText(u));
-  const defaultUnits = ['kg', 'g', 'ltr', 'ml', 'pcs', 'box', 'عدد', 'بسته', 'کیلوگرم', 'گرم', 'كيلو', 'كيلوگرم'];
+  const defaultUnits = ['kg', 'g', 'ltr', 'ml', 'pcs', 'box', 'عدد', 'بسته', 'کیلوگرم', 'گرم'];
   units = [...new Set([...normalizedUnits, ...defaultUnits].map(u => normalizeText(u)))].filter(u => u !== '');
   
   if (units.length > 0) {
     helperSheet.getRange(1, 1, units.length, 1).setValues(units.map(u => [u]));
   }
   const unitRange = helperSheet.getRange(1, 1, Math.max(units.length, 1), 1);
+  
+  // ✅ اصلاح: setAllowInvalid(true)
   const unitRule = SpreadsheetApp.newDataValidation()
-    .requireValueInRange(unitRange, true).setAllowInvalid(false).setHelpText('واحد را انتخاب کنید.').build();
+    .requireValueInRange(unitRange, true)
+    .setAllowInvalid(true) // 🆕 اجازه مقادیر نامعتبر
+    .setHelpText('واحد را انتخاب کنید یا دستی وارد کنید.')
+    .build();
 
-  // 2.2 انبارها
+  // انبارها
   let warehouses = getUniqueValues(['PURCHASES', 'PRODUCTION', 'SALES', 'WASTE', 'STOCK_TAKE', 'OPENING_BALANCES'], 'warehouseCode');
-  if (warehouses.length === 0) warehouses = ['DEFAULT_WH', 'MAIN_WH', 'COLD_STORAGE', 'انبار اصلی'];
+  if (warehouses.length === 0) warehouses = ['DEFAULT_WH', 'MAIN_WH', 'COLD_STORAGE'];
   
   if (warehouses.length > 0) {
     helperSheet.getRange(1, 2, warehouses.length, 1).setValues(warehouses.map(w => [w]));
   }
   const whRange = helperSheet.getRange(1, 2, Math.max(warehouses.length, 1), 1);
+  
+  // ✅ اصلاح: setAllowInvalid(true)
   const whRule = SpreadsheetApp.newDataValidation()
-    .requireValueInRange(whRange, true).setAllowInvalid(false).setHelpText('انبار را انتخاب کنید.').build();
+    .requireValueInRange(whRange, true)
+    .setAllowInvalid(true) // 🆕
+    .setHelpText('انبار را انتخاب کنید یا دستی وارد کنید.')
+    .build();
 
-  // 2.3 نوع کالا و بولین
+  // نوع کالا و بولین
   const typeRule = SpreadsheetApp.newDataValidation().requireValueInList(['RAW', 'PACKAGED', 'PRODUCT'], true).build();
   const boolRule = SpreadsheetApp.newDataValidation().requireValueInList(['TRUE', 'FALSE'], true).build();
 
-  // ─────────────────────────────────────────────
-  // مرحله ۳: تابع اعمال اعتبارسنجی بهینه
-  // ─────────────────────────────────────────────
+  // تابع اعمال اعتبارسنجی
   function applyValidation(sheetName, colName, rule) {
     const sheet = ss.getSheetByName(sheetName);
-    if (!sheet) {
-      console.warn(`⚠️ شیت '${sheetName}' یافت نشد. لیست کشویی برای ستون '${colName}' اعمال نشد.`);
-      return false;
-    }
+    if (!sheet) return false;
     
     try { sheet.getDataRange().clearDataValidations(); } catch(e) {}
     
@@ -946,9 +1149,7 @@ function setupDataValidation() {
     return false;
   }
 
-  // ─────────────────────────────────────────────
-  // مرحله ۴: اعتبارسنجی کالاهای موجود (displayName)
-  // ─────────────────────────────────────────────
+  // اعتبارسنجی کالاها
   const itemsSh = ss.getSheetByName('ITEMS');
   if (itemsSh && itemsSh.getLastRow() >= 2) {
     try { itemsSh.getDataRange().clearDataValidations(); } catch(e) {}
@@ -970,10 +1171,14 @@ function setupDataValidation() {
     }
     
     const displayRange = itemsSh.getRange(2, displayNameCol + 1, lastRow - 1, 1);
-    const itemRule = SpreadsheetApp.newDataValidation()
-      .requireValueInRange(displayRange, true).setAllowInvalid(false).build();
     
-    // 🆕 اصلاح نام STOCK_TAKE
+    // ✅ اصلاح: setAllowInvalid(true)
+    const itemRule = SpreadsheetApp.newDataValidation()
+      .requireValueInRange(displayRange, true)
+      .setAllowInvalid(true) // 🆕 اجازه مقادیر نامعتبر (پاک نمی‌شوند)
+      .setHelpText('کالا را انتخاب کنید یا کد دستی وارد کنید.')
+      .build();
+    
     const itemTargets = [
       { sheet: 'PURCHASES', col: 'itemCode' }, 
       { sheet: 'SALES', col: 'itemCode' },
@@ -983,8 +1188,7 @@ function setupDataValidation() {
       { sheet: 'PRODUCTION', col: 'menuCode' },
       { sheet: 'RECIPES', col: 'menuCode' }, 
       { sheet: 'RECIPES', col: 'ingCode' },
-      { sheet: 'ITEMS', col: 'parentItem' } // 🆕 اضافه شد: لیست کشویی برای کالای والد
-
+      { sheet: 'ITEMS', col: 'parentItem' }
     ];
     
     itemTargets.forEach(t => {
@@ -992,10 +1196,7 @@ function setupDataValidation() {
     });
   }
 
-  // ─────────────────────────────────────────────
-  // مرحله ۵: اعمال واحدها
-  // ─────────────────────────────────────────────
-  // 🆕 اضافه شدن RECIPES و اصلاح STOCK_TAKE
+  // واحدها
   const unitTargets = [
     { sheet: 'ITEMS', col: 'baseUnit' }, 
     { sheet: 'ITEMS', col: 'secondaryUnit' },
@@ -1003,32 +1204,27 @@ function setupDataValidation() {
     { sheet: 'CONVERSIONS', col: 'toUnit' },
     { sheet: 'PURCHASES', col: 'unit' }, 
     { sheet: 'WASTE', col: 'unit' }, 
-    { sheet: 'STOCK_TAKE', col: 'unit' },      // 🆕 اصلاح شد (قبلاً 'STOCK' بود)
-    { sheet: 'RECIPES', col: 'unit' }          // 🆕 اضافه شد
+    { sheet: 'STOCK_TAKE', col: 'unit' },
+    { sheet: 'RECIPES', col: 'unit' }
   ];
   unitTargets.forEach(t => {
     if (applyValidation(t.sheet, t.col, unitRule)) appliedCount++;
   });
 
-  // ─────────────────────────────────────────────
-  // مرحله ۶: اعمال انبارها
-  // ─────────────────────────────────────────────
-  // 🆕 اصلاح نام STOCK_TAKE
+  // انبارها
   const whTargets = [
     { sheet: 'PURCHASES', col: 'warehouseCode' }, 
     { sheet: 'PRODUCTION', col: 'warehouseCode' },
     { sheet: 'SALES', col: 'warehouseCode' }, 
     { sheet: 'WASTE', col: 'warehouseCode' },
-    { sheet: 'STOCK_TAKE', col: 'warehouseCode' },      // 🆕 اصلاح شد
+    { sheet: 'STOCK_TAKE', col: 'warehouseCode' },
     { sheet: 'OPENING_BALANCES', col: 'warehouseCode' }
   ];
   whTargets.forEach(t => {
     if (applyValidation(t.sheet, t.col, whRule)) appliedCount++;
   });
 
-  // ─────────────────────────────────────────────
-  // مرحله ۷: نوع کالا و بولین در ITEMS
-  // ─────────────────────────────────────────────
+  // نوع کالا و بولین
   if (itemsSh) {
     if (applyValidation('ITEMS', 'itemType', typeRule)) appliedCount++;
     if (applyValidation('ITEMS', 'isCatchWeight', boolRule)) appliedCount++;
@@ -1037,17 +1233,18 @@ function setupDataValidation() {
   SpreadsheetApp.flush();
   
   const elapsed = ((new Date() - startTime) / 1000).toFixed(1);
-  ui.alert(`✅ لیست‌های کشویی روی ${appliedCount} ستون اعمال شد.\n⏱️ زمان اجرا: ${elapsed} ثانیه`);
+  ui.alert(`✅ لیست‌های کشویی روی ${appliedCount} ستون اعمال شد.\n⏱️ زمان اجرا: ${elapsed} ثانیه\n\n💡 مقادیر نامعتبر پاک نمی‌شوند.`);
 }
 
 function onEdit(e) {
   if (!e || !e.range) return;
+  
   const sheet = e.source.getActiveSheet();
   const row = e.range.getRow();
   const col = e.range.getColumn();
   if (row < 2) return;
 
-  // 🆕 گسترش خودکار اعتبارسنجی وقتی کاربر به ردیف‌های انتهایی رسید
+  // 🆕 گسترش خودکار اعتبارسنجی
   const sheetName = sheet.getName();
   const targetSheets = ['PURCHASES', 'PRODUCTION', 'SALES', 'WASTE', 'STOCK', 'ITEMS', 'CONVERSIONS'];
   
@@ -1055,16 +1252,12 @@ function onEdit(e) {
     const lastRow = sheet.getLastRow();
     const lastCol = sheet.getLastColumn() || 1;
     
-    // اگر کاربر در ۵ ردیف انتهایی شیت تایپ کرد، اعتبارسنجی را ۵۰ ردیف گسترش بده
     if (row >= lastRow - 4) {
       try {
         const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
         const colName = String(headers[col - 1] || '').trim();
-        
-        // بررسی اینکه آیا این ستون اعتبارسنجی دارد
         const currentValidation = sheet.getRange(row, col).getDataValidation();
         if (currentValidation) {
-          // گسترش اعتبارسنجی ۵۰ ردیف پایین‌تر
           const extendRows = 50;
           sheet.getRange(lastRow + 1, col, extendRows, 1).setDataValidation(currentValidation);
         }
@@ -1072,7 +1265,7 @@ function onEdit(e) {
     }
   }
 
-  // 📅 منطق تبدیل تاریخ جلالی (کد قبلی شما)
+  // 📅 منطق تبدیل تاریخ جلالی
   const targetDateSheets = [CONFIG.SHEETS.PURCHASES, CONFIG.SHEETS.PRODUCTION, CONFIG.SHEETS.SALES, CONFIG.SHEETS.WASTE, CONFIG.SHEETS.STOCK];
   if (!targetDateSheets.includes(sheet.getName())) return;
   
@@ -1081,22 +1274,66 @@ function onEdit(e) {
   const jalaliColIdx = headers.indexOf('jalaliDate');
   const expiryColIdx = headers.indexOf('expiryDate');
   
-  if (e.value && (col - 1 === jalaliColIdx || col - 1 === expiryColIdx)) {
+  // 🆕 بررسی اینکه آیا این ستون تاریخ جلالی یا انقضا است
+  const isJalaliCol = (col - 1 === jalaliColIdx);
+  const isExpiryCol = (col - 1 === expiryColIdx);
+  
+  if (!isJalaliCol && !isExpiryCol) return;
+  
+  // 🆕 پشتیبانی از کپی/پیست (چندین سلول)
+  const range = e.range;
+  const numRows = range.getNumRows();
+  const numCols = range.getNumColumns();
+  
+  // اگر فقط یک سلول است و مقدار مستقیم دارد
+  if (numRows === 1 && numCols === 1 && e.value) {
     const jalaliInput = String(e.value).trim();
     if (!jalaliInput) {
-      if (col - 1 === jalaliColIdx) sheet.getRange(row, dateColIdx + 1).clearContent();
+      if (isJalaliCol) sheet.getRange(row, dateColIdx + 1).clearContent();
       else sheet.getRange(row, col).clearContent();
       return;
     }
+    
     const gregorianDate = convertJalaliToGregorian(jalaliInput);
     if (gregorianDate) {
-      if (col - 1 === jalaliColIdx) {
+      if (isJalaliCol) {
         sheet.getRange(row, dateColIdx + 1).setValue(gregorianDate).setNumberFormat('yyyy/mm/dd');
       } else {
         sheet.getRange(row, col).setValue(gregorianDate).setNumberFormat('yyyy/mm/dd');
       }
     } else {
       SpreadsheetApp.getActive().toast(`فرمت تاریخ جلالی نامعتبر: ${jalaliInput}`, "⚠️ خطا", 5);
+    }
+  }
+  // 🆕 اگر چندین سلول است (کپی/پیست)
+  else if (numRows > 1 || numCols > 1) {
+    const values = range.getValues();
+    
+    for (let i = 0; i < numRows; i++) {
+      for (let j = 0; j < numCols; j++) {
+        const currentRow = row + i;
+        const currentCol = col + j;
+        const value = values[i][j];
+        
+        // فقط اگر این ستون تاریخ جلالی است
+        if (currentCol - 1 === jalaliColIdx && value) {
+          const jalaliInput = String(value).trim();
+          const gregorianDate = convertJalaliToGregorian(jalaliInput);
+          
+          if (gregorianDate) {
+            sheet.getRange(currentRow, dateColIdx + 1).setValue(gregorianDate).setNumberFormat('yyyy/mm/dd');
+          }
+        }
+        // یا اگر این ستون تاریخ انقضا است
+        else if (currentCol - 1 === expiryColIdx && value) {
+          const jalaliInput = String(value).trim();
+          const gregorianDate = convertJalaliToGregorian(jalaliInput);
+          
+          if (gregorianDate) {
+            sheet.getRange(currentRow, currentCol).setValue(gregorianDate).setNumberFormat('yyyy/mm/dd');
+          }
+        }
+      }
     }
   }
 }
@@ -1190,7 +1427,23 @@ function createCodingGuideSheet() {
     ["1", "کد هرگز تغییر نمی‌کند: حتی اگر نام کالا عوض شد، کد ثابت می‌ماند.", ""],
     ["2", "یک کالا = یک کد: هرگز دو کد متفاوت برای یک کالای یکسان نسازید.", ""],
     ["3", "واحدهای اندازه‌گیری (Unit) را استاندارد کنید (مثلاً گوشت همیشه kg).", ""],
-    ["4", "ستون isCatchWeight: برای کالاهایی با وزن متغیر (گوشت، سبزی) حتماً TRUE باشد.", ""]
+    ["4", "ستون isCatchWeight: برای کالاهایی با وزن متغیر (گوشت، سبزی) حتماً TRUE باشد.", ""],
+    // 🆕 بخش جدید: راهنمای نام‌گذاری BatchNumber
+    ["4️⃣ بخش پنجم: استاندارد نام‌گذاری شماره بچ (Batch Naming Convention)", "", ""],
+    ["ساختار کلی", "[BRAND]-[YYMM]-[SEQ]  (برند - سال و ماه انقضا - ترتیب)", ""],
+    ["🪩 گروه تنباکو و قلیان", "", ""],
+    ["MOS-0504-01", "تنباکو مسکو (Moscow) - انقضا ۱۴۰۵/۰۴ - بچ اول", "مثال برای خرید جدید مسکو"],
+    ["LAV-0508-01", "تنباکو لاو (Love) - انقضا ۱۴۰۵/۰۸ - بچ اول", "مثال برای خرید جدید لاو"],
+    ["DSB-0601-01", "تنباکو دوسیب (Double Apple) - انقضا ۱۴۰۶/۰۱ - بچ اول", "مثال برای خرید جدید دوسیب"],
+    ["BLU-0512-01", "تنباکو بلو میست (Blue Mist) - انقضا ۱۴۰۵/۱۲ - بچ اول", "مثال برای خرید جدید بلو"],
+    ["🥩 گروه گوشت و پروتئین", "", ""],
+    ["BF-0503-01", "گوشت گوساله (Beef) - انقضا ۱۴۰۵/۰۳ - بچ اول", "برای گوشت‌های تاریخ‌دار"],
+    ["PO-AUTO-01", "مرغ (Poultry) - بدون تاریخ انقضای دقیق (AUTO)", "اگر تاریخ دقیق ندارید AUTO بزنید"],
+    ["📏 قوانین ثبت BatchNumber", "", ""],
+    ["1", "در شیت PURCHASES (خرید): حتماً بچ جدید را با فرمت بالا تایپ کنید.", ""],
+    ["2", "در شیت SALES (فروش): همیشه AUTO بگذارید (سیستم خودش FEFO را اجرا می‌کند).", ""],
+    ["3", "در شیت STOCK_TAKE (شمارش شب): برای شمارش کل یک کالا از ALL استفاده کنید.", ""]
+
   ];
 
   // نوشتن داده‌ها در شیت
@@ -1270,4 +1523,196 @@ function createCodingGuideSheet() {
   }
 
   SpreadsheetApp.getUi().alert('✅ شیت راهنمای کدگذاری (CODING_GUIDE) با موفقیت، با فرمت هوشمند و دسته‌بندی‌های جدید ایجاد شد.');
+}
+
+
+/* ==========================================
+   🔄 به‌روزرسانی خودکار displayName هنگام ویرایش ITEMS
+   ========================================== */
+
+/**
+ * 🔄 تابع به‌روزرسانی تمام displayName ها (دستی از منو)
+ */
+/**
+ * 🔄 تابع جامع به‌روزرسانی displayName + لیست کشویی RECIPES
+ */
+function refreshAllDisplayNames() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  const itemsSheet = ss.getSheetByName('ITEMS');
+  
+  if (!itemsSheet) {
+    ui.alert('❌ شیت ITEMS یافت نشد.');
+    return;
+  }
+  
+  const lastRow = itemsSheet.getLastRow();
+  if (lastRow < 2) {
+    ui.alert('⚠️ شیت ITEMS خالی است.');
+    return;
+  }
+  
+  const lastCol = itemsSheet.getLastColumn() || 1;
+  const headers = itemsSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  
+  // پیدا کردن ستون‌ها
+  const normHeader = h => String(h||'').replace(/\s+/g,'').replace(/[_\-\u200c]/g,'').toLowerCase();
+  const codeColIdx = headers.findIndex(h => normHeader(h) === 'itemcode');
+  const nameColIdx = headers.findIndex(h => normHeader(h) === 'itemname');
+  
+  if (codeColIdx === -1 || nameColIdx === -1) {
+    ui.alert('❌ ستون‌های itemCode یا itemName یافت نشد.');
+    return;
+  }
+  
+  // پیدا کردن یا ایجاد ستون displayName
+  let displayNameColIdx = headers.findIndex(h => normHeader(h) === 'displayname');
+  if (displayNameColIdx === -1) {
+    displayNameColIdx = lastCol;
+    itemsSheet.getRange(1, displayNameColIdx + 1).setValue('displayName').setFontWeight('bold');
+  }
+  
+  // به‌روزرسانی تمام ردیف‌ها
+  let updatedCount = 0;
+  for (let i = 2; i <= lastRow; i++) {
+    const code = itemsSheet.getRange(i, codeColIdx + 1).getValue();
+    const name = itemsSheet.getRange(i, nameColIdx + 1).getValue();
+    
+    if (code && name) {
+      itemsSheet.getRange(i, displayNameColIdx + 1).setValue(`${name} | ${code}`);
+      updatedCount++;
+    } else {
+      itemsSheet.getRange(i, displayNameColIdx + 1).clearContent();
+    }
+  }
+  
+  // 🆕 به‌روزرسانی لیست کشویی RECIPES
+  try {
+    setupDataValidation();
+    ui.alert(`✅ ${updatedCount} displayName به‌روزرسانی شد.\n📋 لیست کشویی RECIPES هم به‌روز شد.`);
+  } catch (e) {
+    ui.alert(`✅ ${updatedCount} displayName به‌روزرسانی شد.\n⚠️ خطا در به‌روزرسانی لیست کشویی: ${e.message}`);
+  }
+}
+
+/**
+ * 🔄 تشخیص خودکار تغییرات در ITEMS و به‌روزرسانی displayName
+ */
+/**
+ * 🔄 تشخیص خودکار تغییرات در ITEMS و به‌روزرسانی displayName + لیست کشویی
+ */
+function onEditItems(e) {
+  if (!e || !e.range) return;
+  
+  const sheet = e.source.getActiveSheet();
+  if (sheet.getName() !== 'ITEMS') return;
+  
+  const row = e.range.getRow();
+  const col = e.range.getColumn();
+  if (row < 2) return; // هدر را نادیده بگیر
+  
+  const lastCol = sheet.getLastColumn() || 1;
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  
+  const normHeader = h => String(h||'').replace(/\s+/g,'').replace(/[_\-\u200c]/g,'').toLowerCase();
+  const codeColIdx = headers.findIndex(h => normHeader(h) === 'itemcode');
+  const nameColIdx = headers.findIndex(h => normHeader(h) === 'itemname');
+  let displayNameColIdx = headers.findIndex(h => normHeader(h) === 'displayname');
+  
+  // اگر ستون displayName وجود ندارد، بساز
+  if (displayNameColIdx === -1) {
+    displayNameColIdx = lastCol;
+    sheet.getRange(1, displayNameColIdx + 1).setValue('displayName').setFontWeight('bold');
+  }
+  
+  // اگر تغییر در ستون کد یا نام بود
+  if (col === codeColIdx + 1 || col === nameColIdx + 1) {
+    const code = sheet.getRange(row, codeColIdx + 1).getValue();
+    const name = sheet.getRange(row, nameColIdx + 1).getValue();
+    
+    if (code && name) {
+      sheet.getRange(row, displayNameColIdx + 1).setValue(`${name} | ${code}`);
+    } else {
+      sheet.getRange(row, displayNameColIdx + 1).clearContent();
+    }
+    
+    // 🆕 به‌روزرسانی لیست کشویی RECIPES (با تأخیر برای جلوگیری از کندی)
+    try {
+      SpreadsheetApp.flush();
+      setupDataValidation();
+    } catch (err) {
+      console.warn('خطا در به‌روزرسانی لیست کشویی: ' + err.message);
+    }
+  }
+}
+
+
+
+
+
+/**
+ * 🔍 تابع دیباگ برای بررسی مشکل INVENTORY_FINAL
+ */
+function debugPurchasesSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  
+  const purchasesSheet = ss.getSheetByName('PURCHASES');
+  if (!purchasesSheet) {
+    ui.alert('❌ شیت PURCHASES وجود ندارد!');
+    return;
+  }
+  
+  const lastRow = purchasesSheet.getLastRow();
+  if (lastRow < 2) {
+    ui.alert('⚠️ شیت PURCHASES خالی است!');
+    return;
+  }
+  
+  const lastCol = purchasesSheet.getLastColumn();
+  const headers = purchasesSheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const data = purchasesSheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  
+  let report = `📦 بررسی شیت PURCHASES:\n\n`;
+  report += `تعداد ردیف‌ها: ${lastRow - 1}\n`;
+  report += `هدرها: ${headers.join(' | ')}\n\n`;
+  
+  // پیدا کردن ایندکس ستون‌ها
+  const normHeader = h => String(h||'').replace(/\s+/g,'').replace(/[_\-\u200c]/g,'').toLowerCase();
+  const dateIdx = headers.findIndex(h => normHeader(h) === 'date');
+  const itemIdx = headers.findIndex(h => normHeader(h) === 'itemcode');
+  const qtyIdx = headers.findIndex(h => normHeader(h) === 'qty');
+  
+  report += `ایندکس ستون‌ها:\n`;
+  report += `  date: ${dateIdx}\n`;
+  report += `  itemCode: ${itemIdx}\n`;
+  report += `  qty: ${qtyIdx}\n\n`;
+  
+  // بررسی 5 ردیف اول
+  report += `📋 5 ردیف اول:\n`;
+  data.slice(0, 5).forEach((row, i) => {
+    report += `\nردیف ${i+1}:\n`;
+    report += `  date: ${row[dateIdx]} (نوع: ${typeof row[dateIdx]})\n`;
+    report += `  itemCode: ${row[itemIdx]}\n`;
+    report += `  qty: ${row[qtyIdx]}\n`;
+    
+    // بررسی تاریخ
+    const dateVal = row[dateIdx];
+    if (!dateVal) {
+      report += `  ❌ تاریخ خالی است!\n`;
+    } else if (dateVal instanceof Date) {
+      report += `  ✅ تاریخ معتبر (Date object)\n`;
+    } else if (typeof dateVal === 'string') {
+      const parsed = new Date(dateVal);
+      if (isNaN(parsed.getTime())) {
+        report += `  ❌ تاریخ نامعتبر: ${dateVal}\n`;
+      } else {
+        report += `  ✅ تاریخ معتبر (string)\n`;
+      }
+    } else {
+      report += `  ❌ نوع تاریخ نامشخص: ${typeof dateVal}\n`;
+    }
+  });
+  
+  ui.alert(report);
 }
